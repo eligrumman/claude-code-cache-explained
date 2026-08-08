@@ -1,0 +1,647 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Fan-Out</title>
+<style>
+  :root {
+    --bg: #f6f6f4;
+    --panel: #ffffff;
+    --ink: #1d1d20;
+    --ink-soft: #55555f;
+    --line: #e2e2dd;
+    --accent: #3a3a44;
+    --read: #3d7fd6;       /* cool = cache read, cheap */
+    --read-soft: #cfe0f6;
+    --write: #e0603a;      /* hot = rewrite, expensive */
+    --write-soft: #f6d8cd;
+    --grey: #c7c7c2;       /* not-yet-run */
+    --grey-soft: #e9e9e5;
+    --good: #2f8f5b;
+    --bad: #c23b3b;
+    --shadow: 0 1px 3px rgba(0,0,0,.06), 0 6px 20px rgba(0,0,0,.04);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #16161a;
+      --panel: #1f1f25;
+      --ink: #ececf0;
+      --ink-soft: #a2a2ad;
+      --line: #303039;
+      --accent: #d8d8e0;
+      --read: #5b9bf0;
+      --read-soft: #22384f;
+      --write: #f07a53;
+      --write-soft: #4a2b1e;
+      --grey: #4a4a53;
+      --grey-soft: #2a2a31;
+      --good: #4bbd80;
+      --bad: #e56a6a;
+      --shadow: 0 1px 3px rgba(0,0,0,.4), 0 6px 24px rgba(0,0,0,.35);
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    padding: 20px 14px 48px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 22px; font-weight: 650; letter-spacing: -.01em; margin: 0 0 2px; }
+  .sub { color: var(--ink-soft); font-size: 13.5px; margin: 0 0 18px; }
+
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  .card h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-soft); font-weight: 650; margin: 0 0 10px; }
+
+  /* Top bar: premise + wallet */
+  .topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .premise { font-size: 15px; font-weight: 550; margin: 0; }
+  .premise span { color: var(--ink-soft); font-weight: 400; display: block; font-size: 13px; margin-top: 2px; }
+  .wallet {
+    border: 1px solid var(--line); border-radius: 10px; padding: 8px 14px; background: var(--bg);
+    text-align: right; min-width: 128px;
+  }
+  .wallet .wk { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-soft); font-weight: 600; }
+  .wallet .wv { font-size: 24px; font-weight: 700; letter-spacing: -.01em; font-variant-numeric: tabular-nums; margin-top: 1px; }
+  .wallet.low .wv { color: var(--write); }
+  .wallet.dead .wv { color: var(--bad); }
+  .wallet.win .wv { color: var(--good); }
+
+  /* Choice groups */
+  .choice { margin-bottom: 13px; }
+  .choice:last-child { margin-bottom: 0; }
+  .clabel { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-soft); font-weight: 650; margin: 0 0 7px; }
+  .clabel .note { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--ink-soft); }
+  .opts { display: flex; flex-wrap: wrap; gap: 8px; }
+  .opt {
+    appearance: none; border: 1px solid var(--line); background: var(--bg); color: var(--ink);
+    border-radius: 9px; padding: 9px 13px; cursor: pointer; font-size: 14px; font-weight: 600;
+    transition: border-color .15s, background .15s, transform .05s; flex: 1 1 auto; text-align: center;
+    min-width: 84px;
+  }
+  .opt .os { display: block; font-size: 11px; font-weight: 500; color: var(--ink-soft); margin-top: 2px; }
+  .opt:hover:not([disabled]) { border-color: var(--accent); }
+  .opt:active:not([disabled]) { transform: translateY(1px); }
+  .opt.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--panel)); }
+  .opt.on .os { color: var(--ink); }
+  .choice.disabled { opacity: .4; pointer-events: none; }
+  .opt[disabled] { cursor: default; }
+
+  /* Width slider */
+  .widthrow { display: flex; align-items: center; gap: 12px; }
+  .widthrow input[type=range] { flex: 1; accent-color: var(--accent); }
+  .widthval { font-variant-numeric: tabular-nums; font-weight: 650; font-size: 15px; min-width: 74px; text-align: right; }
+  .widthval span { font-weight: 400; color: var(--ink-soft); font-size: 12px; }
+
+  .runrow { display: flex; align-items: center; gap: 12px; margin-top: 4px; }
+  .btn {
+    appearance: none; border: 1px solid var(--accent); background: var(--accent); color: var(--panel);
+    border-radius: 9px; padding: 11px 26px; font-size: 15px; font-weight: 650; cursor: pointer;
+    transition: opacity .15s, transform .05s;
+  }
+  .btn:hover:not([disabled]) { opacity: .9; }
+  .btn:active:not([disabled]) { transform: translateY(1px); }
+  .btn[disabled] { opacity: .5; cursor: default; }
+  .runhint { font-size: 12.5px; color: var(--ink-soft); }
+
+  /* Tape stack */
+  .tape-holder { position: relative; width: 100%; }
+  canvas { display: block; width: 100%; height: auto; border-radius: 8px; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 12px; font-size: 12.5px; color: var(--ink-soft); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .sw { width: 13px; height: 13px; border-radius: 3px; display: inline-block; }
+  .sw.read { background: var(--read); }
+  .sw.write { background: var(--write); }
+  .sw.grey { background: var(--grey); }
+
+  /* Verdict */
+  .verdict { margin-top: 4px; }
+  .verdict .vhead { font-size: 16px; font-weight: 650; margin: 0 0 8px; }
+  .verdict.win .vhead { color: var(--good); }
+  .verdict.loss .vhead { color: var(--bad); }
+  .ledger { font-size: 13px; line-height: 1.75; font-variant-numeric: tabular-nums; }
+  .ledger .row { display: flex; justify-content: space-between; gap: 10px; border-bottom: 1px dashed var(--line); padding: 1px 0; }
+  .ledger .row:last-child { border-bottom: none; }
+  .ledger .lk { color: var(--ink-soft); }
+  .ledger .lv { font-weight: 600; }
+  .ledger .lv.red { color: var(--write); }
+  .ledger .lv.blue { color: var(--read); }
+  .caption { font-size: 13px; color: var(--ink-soft); margin: 14px 0 0; }
+  .caption strong { color: var(--ink); font-weight: 600; }
+</style>
+
+<div class="wrap">
+  <h1>The Fan-Out</h1>
+  <p class="sub">Stage S4. Set four choices, press Run, try to ship 8 dev tasks for less than the budget. The eight requests draw as token tapes: blue is a cache read, red is a rewrite.</p>
+
+  <!-- PREMISE + WALLET -->
+  <div class="card">
+    <div class="topbar">
+      <p class="premise">8 dev tasks. Budget $15. Ship them for less.
+        <span>Every strategy pays for the work. Only the cache tax changes.</span></p>
+      <div class="wallet" id="wallet">
+        <div class="wk">Wallet</div>
+        <div class="wv" id="walletV">$15.00</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CHOICES -->
+  <div class="card">
+    <h2>Your call</h2>
+
+    <div class="choice">
+      <p class="clabel">Model</p>
+      <div class="opts" id="modelOpts">
+        <button class="opt on" data-v="sonnet">sonnet<span class="os">$3 in / $15 out</span></button>
+        <button class="opt" data-v="opus">opus<span class="os">$5 in / $25 out</span></button>
+        <button class="opt" data-v="fable">fable<span class="os">$10 in / $50 out</span></button>
+      </div>
+    </div>
+
+    <div class="choice">
+      <p class="clabel">Who runs the 8 tasks</p>
+      <div class="opts" id="whoOpts">
+        <button class="opt" data-v="inline">Inline<span class="os">one growing session</span></button>
+        <button class="opt on" data-v="subagent">Subagents<span class="os">8 fresh spawns</span></button>
+      </div>
+    </div>
+
+    <div class="choice" id="promptsChoice">
+      <p class="clabel">Prompts <span class="note">(subagents only)</span></p>
+      <div class="opts" id="promptsOpts">
+        <button class="opt on" data-v="identical">Identical<span class="os">same prompt + task file</span></button>
+        <button class="opt" data-v="varied">Varied<span class="os">custom prompt each</span></button>
+      </div>
+    </div>
+
+    <div class="choice" id="widthChoice">
+      <p class="clabel">Fan-out width <span class="note">(how many run before the cache can go cold)</span></p>
+      <div class="widthrow">
+        <input type="range" id="widthRange" min="1" max="8" step="1" value="8">
+        <div class="widthval"><span id="widthWaves"></span> <b id="widthVal">8</b>-wide</div>
+      </div>
+    </div>
+
+    <div class="runrow">
+      <button class="btn" id="runBtn">Run</button>
+      <span class="runhint" id="runHint">8 subagents, identical prompts, 8-wide.</span>
+    </div>
+  </div>
+
+  <!-- TAPES -->
+  <div class="card">
+    <h2>The eight requests</h2>
+    <div class="tape-holder"><canvas id="tape"></canvas></div>
+    <div class="legend">
+      <span><i class="sw read"></i> cache read (0.1x, cheap)</span>
+      <span><i class="sw write"></i> rewrite / fresh (expensive)</span>
+      <span><i class="sw grey"></i> not run yet</span>
+    </div>
+  </div>
+
+  <!-- VERDICT -->
+  <div class="card">
+    <h2>Verdict</h2>
+    <div class="verdict" id="verdict">
+      <p class="vhead" id="vhead">Press Run.</p>
+      <div class="ledger" id="ledger"></div>
+    </div>
+    <p class="caption">Set the four choices, press Run. Try to beat $15. Then try identical sonnet subagents.</p>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ================= ECONOMICS (the one source of truth) =================
+  // Rate multipliers on a model's input price.
+  var RATE = { input: 1, read: 0.1, w5m: 1.25, w1h: 2, out: 5 };
+  // Model input price per 1,000,000 tokens.
+  var MODEL_IN = { sonnet: 3, opus: 5, fable: 10 };
+
+  // Per dev task: a little fresh input, a lot of generated code.
+  var WORK_IN = 6000;      // fresh file/context tokens read per task (1x)
+  var WORK_OUT = 44000;    // code the model writes per task (5x) - where fable bleeds
+
+  // Subagent bases (real measured ledgers).
+  var BASE = 26237;        // identical spawn: 1st writes it, rest read it
+  var VAR_W = 14623;       // varied spawn rewrites this every time
+  var VAR_R = 11602;       // varied spawn reads this every time
+
+  // Inline session growth.
+  var INLINE_B0 = 34000;   // context carried into task 1
+  var INLINE_GROWTH = 22000; // context added per task
+
+  // Fan-out / TTL: ~90s per spawn, 5m warm window => ~3 serial waves stay warm.
+  var WARM_WAVES = 3;
+
+  var BUDGET = 15;
+
+  // Price table per 1M tokens, derived, for display + assertions.
+  function priceTable(model) {
+    var P = MODEL_IN[model];
+    return {
+      input: P * RATE.input, read: P * RATE.read, write5m: P * RATE.w5m,
+      write1h: P * RATE.w1h, output: P * RATE.out
+    };
+  }
+
+  // ---- The pure function: cost one full run, task by task, segment by segment ----
+  // Returns tasks[] each with segs [{tok, rate, role:"read"|"write"}], outTok, cost, cum;
+  // plus total, shipped, diedAt, and a rolled-up breakdown.
+  function computeRun(cfg) {
+    var P = MODEL_IN[cfg.model];
+    var perTokUSD = P / 1e6;
+    var tasks = [];
+    var cum = 0, total = 0, diedAt = null;
+    var bd = { work: 0, output: 0, baseWrite: 0, baseRead: 0, variedWrite: 0, variedRead: 0,
+               inlineRead: 0, inlineWrite: 0, coldBases: 0, warmReads: 0 };
+
+    for (var s = 0; s < 8; s++) {
+      var segs = [];
+      if (cfg.who === "inline") {
+        var prefix = INLINE_B0 + INLINE_GROWTH * s;
+        segs.push({ tok: prefix, rate: RATE.read, role: "read", kind: "prefix" });
+        segs.push({ tok: INLINE_GROWTH, rate: RATE.w1h, role: "write", kind: "tail" });
+        segs.push({ tok: WORK_IN, rate: RATE.input, role: "write", kind: "work" });
+        bd.inlineRead += prefix * RATE.read * perTokUSD;
+        bd.inlineWrite += INLINE_GROWTH * RATE.w1h * perTokUSD;
+      } else if (cfg.prompts === "identical") {
+        var wave = Math.floor(s / cfg.width);
+        var coldWave = (wave % WARM_WAVES === 0);
+        var firstInWave = (s % cfg.width === 0);
+        var cold = coldWave && firstInWave;
+        if (cold) {
+          segs.push({ tok: BASE, rate: RATE.w5m, role: "write", kind: "base" });
+          bd.baseWrite += BASE * RATE.w5m * perTokUSD; bd.coldBases++;
+        } else {
+          segs.push({ tok: BASE, rate: RATE.read, role: "read", kind: "base" });
+          bd.baseRead += BASE * RATE.read * perTokUSD; bd.warmReads++;
+        }
+        segs.push({ tok: WORK_IN, rate: RATE.input, role: "write", kind: "work" });
+      } else { // subagent varied
+        segs.push({ tok: VAR_R, rate: RATE.read, role: "read", kind: "varied" });
+        segs.push({ tok: VAR_W, rate: RATE.w5m, role: "write", kind: "varied" });
+        segs.push({ tok: WORK_IN, rate: RATE.input, role: "write", kind: "work" });
+        bd.variedRead += VAR_R * RATE.read * perTokUSD;
+        bd.variedWrite += VAR_W * RATE.w5m * perTokUSD;
+      }
+
+      var cost = 0, inTok = 0;
+      for (var i = 0; i < segs.length; i++) { cost += segs[i].tok * segs[i].rate; inTok += segs[i].tok; }
+      var outCost = WORK_OUT * RATE.out;
+      cost = (cost + outCost) * perTokUSD;
+      bd.work += WORK_IN * RATE.input * perTokUSD;
+      bd.output += outCost * perTokUSD;
+
+      cum += cost; total += cost;
+      if (diedAt === null && cum > BUDGET) diedAt = s + 1;
+      tasks.push({ index: s, segs: segs, inTok: inTok, outTok: WORK_OUT, cost: cost, cum: cum });
+    }
+    return {
+      tasks: tasks, total: total, shipped: (diedAt === null), diedAt: diedAt, breakdown: bd
+    };
+  }
+
+  function cents(x) { return Math.round(x * 100) / 100; }
+  function usd(x) { return "$" + x.toFixed(2); }
+  function usd4(x) { return "$" + x.toFixed(4); }
+  function fmt(n) { return Math.round(n).toLocaleString("en-US"); }
+
+  // ================= ASSERTIONS (visuals must never disagree) =================
+  (function assertAll() {
+    function eq(a, b, msg) { console.assert(Math.abs(a - b) < 1e-9, msg + " got " + a + " want " + b); }
+
+    // Price tables to the cent-per-token-per-1M.
+    var pS = priceTable("sonnet"), pO = priceTable("opus"), pF = priceTable("fable");
+    eq(pS.input, 3, "sonnet in"); eq(pS.read, 0.3, "sonnet read"); eq(pS.write5m, 3.75, "sonnet w5m"); eq(pS.write1h, 6, "sonnet w1h"); eq(pS.output, 15, "sonnet out");
+    eq(pO.input, 5, "opus in"); eq(pO.read, 0.5, "opus read"); eq(pO.write5m, 6.25, "opus w5m"); eq(pO.write1h, 10, "opus w1h"); eq(pO.output, 25, "opus out");
+    eq(pF.input, 10, "fable in"); eq(pF.read, 1, "fable read"); eq(pF.write5m, 12.5, "fable w5m"); eq(pF.write1h, 20, "fable w1h"); eq(pF.output, 50, "fable out");
+
+    // The 20x gap: a 1h rewrite costs 20x a cache read.
+    eq(RATE.w1h / RATE.read, 20, "20x read-vs-1h gap");
+
+    // Identical ledger: 1st spawn writes 26,237, reads 0; 2nd writes 0, reads 26,237.
+    var id = computeRun({ model: "sonnet", who: "subagent", prompts: "identical", width: 8 });
+    var b0 = id.tasks[0].segs[0], b1 = id.tasks[1].segs[0];
+    eq(b0.tok, 26237, "identical spawn1 base tok"); console.assert(b0.role === "write", "spawn1 writes base");
+    eq(b1.tok, 26237, "identical spawn2 base tok"); console.assert(b1.role === "read", "spawn2 reads base");
+    // "write -> 0 write / 26,237 read": spawn2 contributes zero base-write tokens.
+    var spawn2BaseWrite = (b1.role === "write") ? b1.tok : 0;
+    eq(spawn2BaseWrite, 0, "identical spawn2 base write tokens");
+
+    // Varied ledger: every spawn rewrites 14,623 and reads 11,602 (the HELLO/HEY number).
+    var vr = computeRun({ model: "sonnet", who: "subagent", prompts: "varied", width: 8 });
+    eq(vr.tasks[0].segs[0].tok, 11602, "varied read tok"); console.assert(vr.tasks[0].segs[0].role === "read", "varied reads");
+    eq(vr.tasks[0].segs[1].tok, 14623, "varied write tok"); console.assert(vr.tasks[0].segs[1].role === "write", "varied writes");
+
+    // Two full scripted runs asserted to the cent.
+    var runA = computeRun({ model: "sonnet", who: "subagent", prompts: "identical", width: 8 });
+    eq(cents(runA.total), 5.58, "RUN A identical sonnet total"); console.assert(runA.shipped === true, "RUN A ships 8/8");
+    var runB = computeRun({ model: "fable", who: "inline", prompts: "identical", width: 8 });
+    eq(cents(runB.total), 22.49, "RUN B all-fable inline total"); console.assert(runB.shipped === false, "RUN B breaks");
+    console.assert(runB.diedAt === 6, "RUN B breaks after task 6");
+
+    // Outcome 4 strictly cheaper than 1, 2, 3.
+    var o1 = computeRun({ model: "fable", who: "subagent", prompts: "identical", width: 8 }).total; // any fable
+    var o2 = computeRun({ model: "sonnet", who: "inline", prompts: "identical", width: 8 }).total;   // inline
+    var o3 = computeRun({ model: "sonnet", who: "subagent", prompts: "varied", width: 8 }).total;     // varied
+    var o4 = runA.total;
+    console.assert(o4 < o1 && o4 < o2 && o4 < o3, "outcome4 strictly cheapest vs 1,2,3");
+
+    // ...and it is the global minimum over every combination.
+    var min = Infinity;
+    ["sonnet", "opus", "fable"].forEach(function (m) {
+      ["inline", "subagent"].forEach(function (w) {
+        ["identical", "varied"].forEach(function (pr) {
+          if (w === "inline" && pr === "varied") return;
+          for (var wd = 1; wd <= 8; wd++) {
+            var t = computeRun({ model: m, who: w, prompts: pr, width: wd }).total;
+            if (t < min) min = t;
+          }
+        });
+      });
+    });
+    console.assert(Math.abs(min - o4) < 1e-9, "identical sonnet (8-wide) is the global minimum");
+
+    console.log("[Fan-Out] all economic assertions passed. Winning run (identical sonnet subagents): " + usd4(runA.total) + " -> " + usd(cents(runA.total)));
+  })();
+
+  // ================= UI STATE =================
+  var cfg = { model: "sonnet", who: "subagent", prompts: "identical", width: 8 };
+  var lastRun = null;
+
+  // ---- canvas ----
+  var canvas = document.getElementById("tape");
+  var ctx = canvas.getContext("2d");
+  var state = { cssW: 0, cssH: 0, dpr: 1, reduced: false, anim: null, reveal: 0 };
+
+  var mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+  state.reduced = mq.matches;
+  if (mq.addEventListener) mq.addEventListener("change", function (e) { state.reduced = e.matches; });
+
+  var ROWS = 8, ROW_H = 15, ROW_GAP = 9, PAD_T = 16, PAD_B = 8, GUTTER = 40, PAD_R = 66;
+
+  function resize() {
+    var holder = canvas.parentElement;
+    var w = holder.clientWidth;
+    var h = PAD_T + PAD_B + ROWS * ROW_H + (ROWS - 1) * ROW_GAP;
+    state.cssW = w; state.cssH = h;
+    var dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+    state.dpr = dpr;
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+    canvas.style.height = h + "px";
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    draw();
+  }
+  function cssVar(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+
+  // max input tokens across the 8 tapes (for scaling row length)
+  function maxInput(run) {
+    var m = 1; for (var i = 0; i < run.tasks.length; i++) m = Math.max(m, run.tasks[i].inTok); return m;
+  }
+
+  function draw() {
+    var W = state.cssW, H = state.cssH;
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = cssVar("--panel"); ctx.fillRect(0, 0, W, H);
+
+    var C = { read: cssVar("--read"), write: cssVar("--write"), grey: cssVar("--grey"),
+              greySoft: cssVar("--grey-soft"), ink: cssVar("--ink"), inkSoft: cssVar("--ink-soft"),
+              good: cssVar("--good"), bad: cssVar("--bad") };
+
+    var run = lastRun;
+    var barX = GUTTER, barMaxW = W - GUTTER - PAD_R;
+    var mIn = run ? maxInput(run) : 1;
+    var reveal = run ? state.reveal : 0; // 0..8 fractional rows revealed
+    var deadAt = run && run.diedAt ? run.diedAt : null;
+
+    for (var r = 0; r < ROWS; r++) {
+      var y = PAD_T + r * (ROW_H + ROW_GAP);
+      // row label
+      ctx.fillStyle = C.inkSoft;
+      ctx.font = "600 10px -apple-system, system-ui, sans-serif";
+      ctx.textAlign = "left"; ctx.textBaseline = "middle";
+      ctx.fillText("task " + (r + 1), 0, y + ROW_H / 2);
+
+      if (!run) {
+        ctx.fillStyle = C.greySoft;
+        ctx.fillRect(barX, y, barMaxW * 0.5, ROW_H);
+        continue;
+      }
+
+      var task = run.tasks[r];
+      var rowW = barMaxW * (task.inTok / mIn);
+      var rowReveal = Math.max(0, Math.min(1, reveal - r)); // 0..1 for this row
+
+      // dead rows (never ran): faint
+      var neverRan = deadAt && (r + 1 > deadAt);
+
+      // base track
+      ctx.fillStyle = C.greySoft;
+      ctx.fillRect(barX, y, rowW, ROW_H);
+
+      // segments, left to right, clipped to reveal
+      var cursor = 0;
+      for (var s = 0; s < task.segs.length; s++) {
+        var seg = task.segs[s];
+        var segW = rowW * (seg.tok / task.inTok);
+        var x0 = barX + cursor;
+        var vis = Math.max(0, Math.min(segW, rowW * rowReveal - cursor));
+        if (vis > 0.4 && !neverRan) {
+          ctx.fillStyle = (seg.role === "read") ? C.read : C.write;
+          ctx.globalAlpha = 1;
+          ctx.fillRect(x0, y, vis, ROW_H);
+        }
+        cursor += segW;
+      }
+
+      // output pip + cost label at row end
+      var endX = barX + rowW + 6;
+      ctx.textAlign = "left"; ctx.textBaseline = "middle";
+      if (neverRan) {
+        ctx.fillStyle = C.bad;
+        ctx.font = "600 10px -apple-system, system-ui, sans-serif";
+        ctx.fillText("not run", endX, y + ROW_H / 2);
+      } else if (rowReveal >= 1) {
+        ctx.fillStyle = C.inkSoft;
+        ctx.font = "600 10.5px -apple-system, system-ui, sans-serif";
+        ctx.fillText(usd(task.cost), endX, y + ROW_H / 2);
+      }
+
+      // scan-head playhead on the actively sweeping row
+      if (!neverRan && rowReveal > 0 && rowReveal < 1) {
+        var px = barX + rowW * rowReveal;
+        ctx.strokeStyle = C.ink; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(px, y - 2); ctx.lineTo(px, y + ROW_H + 2); ctx.stroke();
+      }
+    }
+  }
+
+  // ---- single bounded rAF ----
+  var rafId = null;
+  function ensureLoop() { if (rafId == null) rafId = requestAnimationFrame(tick); }
+  function tick(now) {
+    rafId = null;
+    var a = state.anim;
+    if (!a) { draw(); return; }
+    var t = Math.min(1, (now - a.t0) / a.dur);
+    var e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+    // reveal advances 0..8 but stops at death row
+    var maxReveal = lastRun.diedAt ? lastRun.diedAt : 8;
+    state.reveal = e * maxReveal;
+    updateWalletDuringRun();
+    draw();
+    if (t >= 1) { state.anim = null; state.reveal = maxReveal; finishRun(); }
+    else ensureLoop();
+  }
+
+  function updateWalletDuringRun() {
+    if (!lastRun) return;
+    var reveal = state.reveal, spent = 0;
+    for (var r = 0; r < ROWS; r++) {
+      var frac = Math.max(0, Math.min(1, reveal - r));
+      if (frac <= 0) break;
+      spent += lastRun.tasks[r].cost * frac;
+    }
+    var remain = BUDGET - spent;
+    setWallet(remain, remain < 0);
+  }
+
+  // ================= WALLET / VERDICT =================
+  var walletEl = document.getElementById("wallet");
+  var walletV = document.getElementById("walletV");
+  function setWallet(remain, dead) {
+    walletV.textContent = (remain < 0 ? "-$" + Math.abs(remain).toFixed(2) : "$" + remain.toFixed(2));
+    walletEl.className = "wallet" + (dead ? " dead" : (remain < 4 ? " low" : ""));
+  }
+
+  function runNow() {
+    if (state.anim) return;
+    lastRun = computeRun(cfg);
+    document.getElementById("vhead").textContent = "";
+    document.getElementById("ledger").innerHTML = "";
+    document.getElementById("verdict").className = "verdict";
+    setWallet(BUDGET, false);
+
+    if (state.reduced) {
+      state.reveal = lastRun.diedAt ? lastRun.diedAt : 8;
+      draw(); finishRun(); return;
+    }
+    state.reveal = 0;
+    document.getElementById("runBtn").disabled = true;
+    state.anim = { t0: performance.now(), dur: 1750 };
+    ensureLoop();
+  }
+
+  function finishRun() {
+    document.getElementById("runBtn").disabled = false;
+    var run = lastRun;
+    var spent = run.diedAt
+      ? run.tasks.slice(0, run.diedAt).reduce(function (a, t) { return a + t.cost; }, 0)
+      : run.total;
+    var remain = BUDGET - spent;
+    setWallet(remain, run.diedAt != null);
+    if (run.diedAt) { walletEl.className = "wallet dead"; }
+    else { walletEl.className = "wallet win"; }
+
+    renderVerdict(run, spent);
+    draw();
+  }
+
+  function renderVerdict(run, spent) {
+    var v = document.getElementById("verdict");
+    var head = document.getElementById("vhead");
+    var led = document.getElementById("ledger");
+    var bd = run.breakdown;
+
+    var rows = [];
+    rows.push(rowHTML("work + generated code (all strategies pay this)", usd(bd.work + bd.output), ""));
+
+    if (cfg.who === "inline") {
+      rows.push(rowHTML("context re-reads (blue, cheap but growing)", usd(bd.inlineRead), "blue"));
+      rows.push(rowHTML("context rewrites at the 1h tier (red, 2x)", usd(bd.inlineWrite), "red"));
+    } else if (cfg.prompts === "identical") {
+      rows.push(rowHTML("cold prompt bases written (" + bd.coldBases + " x 26,237 at 1.25x)", usd(bd.baseWrite), "red"));
+      rows.push(rowHTML("warm base reads (" + bd.warmReads + " x 26,237 at 0.1x)", usd(bd.baseRead), "blue"));
+    } else {
+      rows.push(rowHTML("per-spawn rewrites (8 x 14,623 at 1.25x)", usd(bd.variedWrite), "red"));
+      rows.push(rowHTML("per-spawn reads (8 x 11,602 at 0.1x)", usd(bd.variedRead), "blue"));
+    }
+    led.innerHTML = rows.join("");
+
+    if (run.shipped) {
+      v.className = "verdict win";
+      head.textContent = "Shipped 8 of 8 for " + usd(spent) + " of $15.";
+    } else {
+      v.className = "verdict loss";
+      var shortfall = spent - BUDGET;
+      head.textContent = "Broke after " + run.diedAt + " tasks. Spent " + usd(spent) + ", blew the $15 budget by " + usd(shortfall) + ".";
+    }
+  }
+  function rowHTML(k, val, cls) {
+    return '<div class="row"><span class="lk">' + k + '</span><span class="lv ' + cls + '">' + val + '</span></div>';
+  }
+
+  // ================= CHOICE WIRING =================
+  function refreshDisabled() {
+    var pc = document.getElementById("promptsChoice");
+    var wc = document.getElementById("widthChoice");
+    var isSub = cfg.who === "subagent";
+    pc.className = "choice" + (isSub ? "" : " disabled");
+    wc.className = "choice" + (isSub ? "" : " disabled");
+    document.getElementById("widthRange").disabled = !isSub;
+    // width waves hint
+    var waves = Math.ceil(8 / cfg.width);
+    var cold = Math.ceil(waves / WARM_WAVES);
+    document.getElementById("widthWaves").textContent = cold > 1
+      ? "(" + cold + " cold bases)" : "(1 cold base)";
+    // run hint
+    var h;
+    if (!isSub) h = cfg.model + ", inline in one growing session.";
+    else h = "8 " + cfg.model + " subagents, " + cfg.prompts + " prompts, " + cfg.width + "-wide.";
+    document.getElementById("runHint").textContent = h;
+  }
+
+  function bindOpts(id, key) {
+    var box = document.getElementById(id);
+    box.addEventListener("click", function (ev) {
+      var b = ev.target.closest(".opt"); if (!b || b.disabled) return;
+      cfg[key] = b.getAttribute("data-v");
+      box.querySelectorAll(".opt").forEach(function (o) { o.classList.toggle("on", o === b); });
+      refreshDisabled();
+    });
+  }
+  bindOpts("modelOpts", "model");
+  bindOpts("whoOpts", "who");
+  bindOpts("promptsOpts", "prompts");
+
+  var wr = document.getElementById("widthRange");
+  wr.addEventListener("input", function () {
+    cfg.width = parseInt(wr.value, 10);
+    document.getElementById("widthVal").textContent = cfg.width;
+    refreshDisabled();
+  });
+
+  document.getElementById("runBtn").addEventListener("click", runNow);
+
+  // ================= INIT =================
+  var ro = new ResizeObserver(function () { resize(); });
+  ro.observe(canvas.parentElement);
+  window.addEventListener("resize", resize);
+  refreshDisabled();
+  resize();
+})();
+</script>
