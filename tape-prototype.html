@@ -1,0 +1,713 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Tape</title>
+<style>
+  :root {
+    --bg: #f6f6f4;
+    --panel: #ffffff;
+    --ink: #1d1d20;
+    --ink-soft: #55555f;
+    --line: #e2e2dd;
+    --accent: #3a3a44;
+    --read: #3d7fd6;       /* cool = cache read, cheap */
+    --read-soft: #cfe0f6;
+    --write: #e0603a;      /* hot = rewrite, expensive */
+    --write-soft: #f6d8cd;
+    --grey: #c7c7c2;       /* not-yet-sent */
+    --grey-soft: #e9e9e5;
+    --catalog: #b98a2e;    /* highlighted sub-block outline */
+    --good: #2f8f5b;
+    --bad: #c23b3b;
+    --shadow: 0 1px 3px rgba(0,0,0,.06), 0 6px 20px rgba(0,0,0,.04);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #16161a;
+      --panel: #1f1f25;
+      --ink: #ececf0;
+      --ink-soft: #a2a2ad;
+      --line: #303039;
+      --accent: #d8d8e0;
+      --read: #5b9bf0;
+      --read-soft: #22384f;
+      --write: #f07a53;
+      --write-soft: #4a2b1e;
+      --grey: #4a4a53;
+      --grey-soft: #2a2a31;
+      --catalog: #d7a544;
+      --good: #4bbd80;
+      --bad: #e56a6a;
+      --shadow: 0 1px 3px rgba(0,0,0,.4), 0 6px 24px rgba(0,0,0,.35);
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    padding: 20px 14px 48px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; }
+  h1 { font-size: 22px; font-weight: 650; letter-spacing: -.01em; margin: 0 0 2px; }
+  .sub { color: var(--ink-soft); font-size: 13.5px; margin: 0 0 20px; }
+
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-soft); font-weight: 650; margin: 0 0 12px; }
+
+  /* Quiz */
+  .quiz-q { font-size: 15.5px; font-weight: 550; margin: 0 0 12px; }
+  .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  @media (max-width: 520px) { .cards { grid-template-columns: repeat(2, 1fr); } }
+  .qcard {
+    appearance: none; border: 1px solid var(--line); background: var(--bg);
+    color: var(--ink); border-radius: 9px; padding: 12px 8px; cursor: pointer;
+    font-size: 15px; font-weight: 600; text-align: center; transition: border-color .15s, background .15s, transform .05s;
+  }
+  .qcard:hover { border-color: var(--accent); }
+  .qcard:active { transform: translateY(1px); }
+  .qcard .qc-sub { display: block; font-size: 11px; font-weight: 500; color: var(--ink-soft); margin-top: 3px; }
+  .qcard.correct { border-color: var(--good); background: color-mix(in srgb, var(--good) 12%, var(--panel)); }
+  .qcard.incorrect { border-color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, var(--panel)); }
+  .qcard[disabled] { cursor: default; }
+  .reveal-caption { margin: 12px 0 0; font-size: 14px; color: var(--ink); min-height: 0; }
+  .reveal-caption strong { color: var(--write); }
+
+  /* Meter */
+  .meter { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 12px; }
+  @media (max-width: 520px) { .meter { grid-template-columns: repeat(2, 1fr); } }
+  .stat { border: 1px solid var(--line); border-radius: 9px; padding: 9px 10px; background: var(--bg); }
+  .stat .k { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-soft); font-weight: 600; }
+  .stat .v { font-size: 19px; font-weight: 650; letter-spacing: -.01em; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .stat.read .v { color: var(--read); }
+  .stat.write .v { color: var(--write); }
+  .stat.usd .v { color: var(--ink); }
+
+  /* Tape canvas */
+  .tape-holder { position: relative; width: 100%; }
+  canvas { display: block; width: 100%; height: auto; border-radius: 8px; touch-action: none; cursor: crosshair; }
+
+  .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 12px; }
+  .btn {
+    appearance: none; border: 1px solid var(--accent); background: var(--accent); color: var(--panel);
+    border-radius: 9px; padding: 10px 18px; font-size: 15px; font-weight: 600; cursor: pointer;
+    transition: opacity .15s, transform .05s;
+  }
+  .btn:hover { opacity: .9; }
+  .btn:active { transform: translateY(1px); }
+  .btn.ghost { background: transparent; color: var(--ink); border-color: var(--line); }
+  .btn[disabled] { opacity: .5; cursor: default; }
+  .toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink-soft); }
+  .toggle select { font: inherit; padding: 5px 6px; border-radius: 7px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 12px; font-size: 12.5px; color: var(--ink-soft); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .sw { width: 13px; height: 13px; border-radius: 3px; display: inline-block; }
+  .sw.read { background: var(--read); }
+  .sw.write { background: var(--write); }
+  .sw.grey { background: var(--grey); }
+  .sw.catalog { background: transparent; border: 2px solid var(--catalog); }
+
+  .hint { font-size: 13px; color: var(--ink-soft); margin-top: 14px; }
+  .hint code { background: var(--grey-soft); padding: 1px 5px; border-radius: 5px; font-size: 12px; }
+  .status { font-size: 13px; color: var(--ink-soft); margin-top: 8px; min-height: 18px; }
+  .status.hit { color: var(--read); font-weight: 600; }
+  .status.cold { color: var(--write); font-weight: 600; }
+  .rm-summary { font-size: 13.5px; color: var(--ink); margin-top: 10px; line-height: 1.6; display: none; }
+  .rm-summary.on { display: block; }
+</style>
+
+<div class="wrap">
+  <h1>The Tape</h1>
+  <p class="sub">A Claude Code request is one long ordered token stream. Here it is, drawn to scale. The cache matches from the front and stops at the first change.</p>
+
+  <!-- QUIZ -->
+  <div class="card" id="quizCard">
+    <h2>Warm-up</h2>
+    <p class="quiz-q">You type one word: <strong>hey</strong>. How many tokens go over the wire?</p>
+    <div class="cards" id="quizCards">
+      <button class="qcard" data-v="1">~1<span class="qc-sub">just the word</span></button>
+      <button class="qcard" data-v="500">~500<span class="qc-sub">a paragraph</span></button>
+      <button class="qcard" data-v="5000">~5,000<span class="qc-sub">a document</span></button>
+      <button class="qcard" data-v="35000">~35,000<span class="qc-sub">a whole book chapter</span></button>
+    </div>
+    <p class="reveal-caption" id="revealCaption"></p>
+  </div>
+
+  <!-- METER + TAPE -->
+  <div class="card">
+    <h2>The request</h2>
+    <div class="meter">
+      <div class="stat"><div class="k">Tokens sent</div><div class="v" id="mSent">0</div></div>
+      <div class="stat read"><div class="k">Read (cache)</div><div class="v" id="mRead">0</div></div>
+      <div class="stat write"><div class="k">Written</div><div class="v" id="mWrite">0</div></div>
+      <div class="stat usd"><div class="k">API-equiv $</div><div class="v" id="mUsd">$0.0000</div></div>
+    </div>
+
+    <div class="tape-holder">
+      <canvas id="tape"></canvas>
+    </div>
+
+    <div class="controls">
+      <button class="btn" id="sendBtn">Send</button>
+      <button class="btn ghost" id="clearScar">Clear edit</button>
+      <label class="toggle">cache write TTL
+        <select id="ttl">
+          <option value="1h">1 hour (2x)</option>
+          <option value="5m">5 min (1.25x)</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="status" id="status">Warm cache. Press Send with no edit for a full cache hit.</div>
+
+    <div class="legend">
+      <span><i class="sw read"></i> read (cheap, 0.1x)</span>
+      <span><i class="sw write"></i> written (expensive)</span>
+      <span><i class="sw grey"></i> not yet sent</span>
+      <span><i class="sw catalog"></i> catalog sub-block</span>
+    </div>
+
+    <p class="hint">Click the tape to place an edit, then press <strong>Send</strong>. The scan-head sweeps left to right: blue where the cache still matches, red from your edit onward. Drag the edit left and re-Send to watch the red region grow.</p>
+    <p class="rm-summary" id="rmSummary"></p>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ---------- Model: the request as ordered segments ----------
+  var SEGMENTS = [
+    { id: "tools",   label: "tools",    tok: 16295, color: "seg1" },
+    { id: "system",  label: "system",   tok: 2750,  color: "seg2" },
+    { id: "messages",label: "messages", tok: 15693, color: "seg3",
+      sub: { id: "catalog", label: "catalog", tok: 13083, offsetInSeg: 900 } }
+  ];
+  var HEY_TOK = 1; // the word the user typed, the very last token of the stream
+  var TOTAL = SEGMENTS.reduce(function (a, s) { return a + s.tok; }, 0); // 34,738 (hey is its last token)
+
+  // Pricing per 1M tokens (Opus, API-equivalent)
+  var PRICE = {
+    input: 5.0,        // 1x
+    read: 0.50,        // 0.1x
+    write5m: 6.25,     // 1.25x
+    write1h: 10.0      // 2x
+  };
+  function writeRate(ttl) { return ttl === "5m" ? PRICE.write5m : PRICE.write1h; }
+
+  // ---------- Piecewise scale ----------
+  // A pure proportional scale would render "hey" as 1/34739 of the width (invisible).
+  // We give each real segment a proportional share of a "budget" band, but reserve a
+  // fixed minimum pixel width for the 1-token "hey" sliver so it stays findable.
+  // tokenToX maps a token offset -> x pixel; it is piecewise-linear with a magnified tail.
+
+  var state = {
+    dpr: 1,
+    cssW: 0, cssH: 0,
+    padL: 14, padR: 14,
+    bandTop: 0, bandH: 0,
+    scarTok: null,          // null = no edit
+    everSent: false,        // first ever send is cold (full write)
+    lastSweepTo: 0,         // token offset the last completed sweep reached (for redraw)
+    lastResult: null,
+    ttl: "1h",
+    // animation
+    anim: null,             // {type, t0, dur, ...}
+    zoom: 1,                // camera zoom over tape geometry (1 = full tape visible)
+    zoomCenterTok: 0,       // token the camera is centered on
+    reduced: false
+  };
+
+  var HEY_PX = 26;   // reserved pixels for the hey sliver + its magnifier anchor
+
+  function bandGeom() {
+    // returns usable band pixel range [x0, x1] for the proportional part,
+    // leaving HEY_PX at the right for the sliver.
+    var x0 = state.padL;
+    var x1 = state.cssW - state.padR - HEY_PX;
+    return { x0: x0, x1: x1, w: Math.max(10, x1 - x0) };
+  }
+
+  // base (unzoomed) token -> x
+  function tokToXbase(tok) {
+    var g = bandGeom();
+    var mainTok = TOTAL - HEY_TOK;
+    if (tok <= mainTok) {
+      return g.x0 + (tok / mainTok) * g.w;
+    }
+    // the hey sliver occupies the reserved tail
+    var frac = (tok - mainTok) / HEY_TOK;
+    return g.x1 + frac * HEY_PX;
+  }
+
+  // apply camera (zoom + center) for the reveal animation
+  function tokToX(tok) {
+    var bx = tokToXbase(tok);
+    if (state.zoom === 1) return bx;
+    var cx = tokToXbase(state.zoomCenterTok);
+    var mid = state.cssW / 2;
+    return mid + (bx - cx) * state.zoom;
+  }
+
+  function xToTok(x) {
+    // invert base mapping (used for click placement; only meaningful at zoom 1)
+    var g = bandGeom();
+    var mainTok = TOTAL - HEY_TOK;
+    if (x <= g.x1) {
+      var f = (x - g.x0) / g.w;
+      return Math.max(0, Math.min(mainTok, Math.round(f * mainTok)));
+    }
+    var f2 = (x - g.x1) / HEY_PX;
+    return Math.min(TOTAL, mainTok + Math.round(f2 * HEY_TOK));
+  }
+
+  // ---------- The one pure function: simulateSend ----------
+  function simulateSend(st) {
+    var firstDiff;
+    if (!st.everSent) {
+      firstDiff = 0;               // cold cache: everything is a write
+    } else if (st.scarTok == null) {
+      firstDiff = TOTAL;           // warm, no edit: full cache hit
+    } else {
+      firstDiff = Math.max(0, Math.min(TOTAL, st.scarTok));
+    }
+    var readTok = firstDiff;
+    var writeTok = TOTAL - firstDiff;
+    var wr = writeRate(st.ttl);
+    var usd = (readTok * PRICE.read + writeTok * wr) / 1e6;
+
+    var sweep = [];
+    if (readTok > 0) sweep.push({ fromTok: 0, toTok: firstDiff, color: "read" });
+    if (writeTok > 0) sweep.push({ fromTok: firstDiff, toTok: TOTAL, color: "write" });
+
+    return { firstDiffTok: firstDiff, readTok: readTok, writeTok: writeTok, usd: usd, sweep: sweep };
+  }
+
+  // ---------- Canvas setup ----------
+  var canvas = document.getElementById("tape");
+  var ctx = canvas.getContext("2d");
+
+  function resize() {
+    var holder = canvas.parentElement;
+    var w = holder.clientWidth;
+    var h = Math.max(150, Math.min(230, Math.round(w * 0.42)));
+    state.cssW = w; state.cssH = h;
+    var dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+    state.dpr = dpr;
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+    canvas.style.height = h + "px";
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    // band vertical placement
+    state.bandTop = Math.round(h * 0.30);
+    state.bandH = Math.round(h * 0.34);
+    draw();
+  }
+
+  function cssVar(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+
+  // segment token ranges
+  function segRanges() {
+    var out = [], off = 0;
+    for (var i = 0; i < SEGMENTS.length; i++) {
+      var s = SEGMENTS[i];
+      out.push({ seg: s, from: off, to: off + s.tok });
+      off += s.tok;
+    }
+    return out;
+  }
+
+  // draw one horizontal slab between two token offsets at a given y/h with fill
+  function slab(fromTok, toTok, y, h, fill) {
+    var x1 = tokToX(fromTok), x2 = tokToX(toTok);
+    if (x2 < x1) { var t = x1; x1 = x2; x2 = t; }
+    // clip to visible
+    var vis0 = -20, vis1 = state.cssW + 20;
+    if (x2 < vis0 || x1 > vis1) return null;
+    x1 = Math.max(vis0, x1); x2 = Math.min(vis1, x2);
+    ctx.fillStyle = fill;
+    ctx.fillRect(x1, y, Math.max(0.6, x2 - x1), h);
+    return { x1: x1, x2: x2 };
+  }
+
+  function draw() {
+    var W = state.cssW, H = state.cssH;
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = cssVar("--panel");
+    ctx.fillRect(0, 0, W, H);
+
+    var top = state.bandTop, bh = state.bandH;
+    var ranges = segRanges();
+    var res = state.lastResult;
+    var sweepTo = state.lastSweepTo; // token offset painted so far
+
+    var C = {
+      read: cssVar("--read"), readSoft: cssVar("--read-soft"),
+      write: cssVar("--write"), writeSoft: cssVar("--write-soft"),
+      grey: cssVar("--grey"), greySoft: cssVar("--grey-soft"),
+      catalog: cssVar("--catalog"), ink: cssVar("--ink"), inkSoft: cssVar("--ink-soft"),
+      line: cssVar("--line")
+    };
+
+    // 1) base band: neutral segment fills (alternating soft shades) = "not yet sent"
+    for (var i = 0; i < ranges.length; i++) {
+      var r = ranges[i];
+      slab(r.from, r.to, top, bh, i % 2 === 0 ? C.greySoft : cssVar("--bg"));
+    }
+    // hey sliver base
+    slab(TOTAL - HEY_TOK, TOTAL, top, bh, C.grey);
+
+    // 2) sweep overlay (read/write) up to sweepTo
+    if (res) {
+      for (var k = 0; k < res.sweep.length; k++) {
+        var sw = res.sweep[k];
+        var to = Math.min(sw.toTok, sweepTo);
+        if (to <= sw.fromTok) continue;
+        slab(sw.fromTok, to, top, bh, sw.color === "read" ? C.read : C.write);
+      }
+    }
+
+    // 3) segment separators + labels
+    ctx.textBaseline = "alphabetic";
+    for (var j = 0; j < ranges.length; j++) {
+      var rr = ranges[j];
+      var xs = tokToX(rr.from);
+      // separator
+      if (j > 0) {
+        ctx.strokeStyle = cssVar("--panel");
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(xs, top); ctx.lineTo(xs, top + bh); ctx.stroke();
+      }
+      // label above band
+      var mid = (tokToX(rr.from) + tokToX(rr.to)) / 2;
+      if (mid > 8 && mid < W - 8) {
+        ctx.fillStyle = C.ink;
+        ctx.font = "600 12px -apple-system, system-ui, sans-serif";
+        ctx.textAlign = "center";
+        var lbl = rr.seg.label;
+        ctx.fillText(lbl, clampX(mid, ctx, lbl, 12), top - 20);
+        ctx.fillStyle = C.inkSoft;
+        ctx.font = "500 10.5px -apple-system, system-ui, sans-serif";
+        ctx.fillText(fmt(rr.seg.tok) + " tok", clampX(mid, ctx, fmt(rr.seg.tok)+" tok", 10.5), top - 7);
+      }
+    }
+
+    // 4) catalog sub-block outline inside messages
+    var msg = ranges[2];
+    if (msg && msg.seg.sub) {
+      var sub = msg.seg.sub;
+      var cFrom = msg.from + sub.offsetInSeg;
+      var cTo = cFrom + sub.tok;
+      var cx1 = tokToX(cFrom), cx2 = tokToX(cTo);
+      ctx.strokeStyle = C.catalog;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(cx1 + 1, top + 2, Math.max(1, cx2 - cx1 - 2), bh - 4);
+      var cmid = (cx1 + cx2) / 2;
+      if (cmid > 20 && cmid < W - 20) {
+        ctx.fillStyle = C.catalog;
+        ctx.font = "600 10px -apple-system, system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("catalog " + fmt(sub.tok), clampX(cmid, ctx, "catalog "+fmt(sub.tok), 10), top + bh + 14);
+      }
+    }
+
+    // 5) scar (edit pencil mark)
+    if (state.scarTok != null) {
+      var sx = tokToX(state.scarTok);
+      if (sx > -10 && sx < W + 10) {
+        ctx.strokeStyle = C.write;
+        ctx.lineWidth = 2;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath(); ctx.moveTo(sx, top - 4); ctx.lineTo(sx, top + bh + 4); ctx.stroke();
+        ctx.setLineDash([]);
+        // pencil head
+        ctx.fillStyle = C.write;
+        ctx.beginPath();
+        ctx.moveTo(sx, top - 4); ctx.lineTo(sx - 4, top - 12); ctx.lineTo(sx + 4, top - 12); ctx.closePath();
+        ctx.fill();
+        ctx.font = "600 9.5px -apple-system, system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("edit", clampX(sx, ctx, "edit", 9.5), top + bh + 26);
+      }
+    }
+
+    // 6) the "hey" magnifier callout (only at full zoom, so it doesn't fight the reveal)
+    if (state.zoom === 1) {
+      drawHeyCallout(C, top, bh);
+    }
+
+    // 7) scan-head playhead during sweep
+    if (state.anim && state.anim.type === "sweep") {
+      var px = tokToX(sweepTo);
+      ctx.strokeStyle = C.ink;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(px, top - 6); ctx.lineTo(px, top + bh + 6); ctx.stroke();
+      ctx.fillStyle = C.ink;
+      ctx.beginPath();
+      ctx.arc(px, top - 6, 3, 0, Math.PI * 2); ctx.fill();
+    }
+
+    // 8) reveal caption zoom marker: draw a faint frame of the full tape extents when zoomed
+  }
+
+  function drawHeyCallout(C, top, bh) {
+    var sx1 = tokToXbase(TOTAL - HEY_TOK);
+    var sx2 = tokToXbase(TOTAL);
+    var cx = (sx1 + sx2) / 2;
+    var W = state.cssW;
+    // little bracket under the sliver
+    var by = top + bh + 6;
+    ctx.strokeStyle = C.inkSoft;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(sx1 - 2, by); ctx.lineTo(sx1 - 2, by + 4);
+    ctx.lineTo(sx2 + 2, by + 4); ctx.lineTo(sx2 + 2, by);
+    ctx.stroke();
+    // callout text, right-aligned so it never clips the edge
+    ctx.fillStyle = C.inkSoft;
+    ctx.font = "500 10px -apple-system, system-ui, sans-serif";
+    ctx.textAlign = "right";
+    ctx.fillText("~1 tok: “hey”", W - 4, by + 16);
+    ctx.textAlign = "start";
+  }
+
+  // keep centered text from overflowing canvas edges
+  function clampX(x, c, text, size) {
+    c.font = "600 " + size + "px -apple-system, system-ui, sans-serif";
+    var half = c.measureText(text).width / 2;
+    return Math.max(half + 3, Math.min(state.cssW - half - 3, x));
+  }
+
+  function fmt(n) { return n.toLocaleString("en-US"); }
+  function fmtUsd(n) { return "$" + n.toFixed(4); }
+
+  // ---------- Meter rendering ----------
+  var mSent = document.getElementById("mSent"),
+      mRead = document.getElementById("mRead"),
+      mWrite = document.getElementById("mWrite"),
+      mUsd = document.getElementById("mUsd");
+
+  function setMeter(sent, read, write, usd) {
+    mSent.textContent = fmt(Math.round(sent));
+    mRead.textContent = fmt(Math.round(read));
+    mWrite.textContent = fmt(Math.round(write));
+    mUsd.textContent = fmtUsd(usd);
+  }
+
+  // ---------- Animation loop (single bounded rAF) ----------
+  var rafId = null;
+  function ensureLoop() { if (rafId == null) rafId = requestAnimationFrame(tick); }
+  function tick(now) {
+    rafId = null;
+    var a = state.anim;
+    if (!a) { draw(); return; } // one settle frame, then stop
+    var t = Math.min(1, (now - a.t0) / a.dur);
+    var e = easeInOut(t);
+
+    if (a.type === "sweep") {
+      state.lastSweepTo = a.fromTok + (a.toTok - a.fromTok) * e;
+      var res = state.lastResult;
+      // meter counts up in sync with swept tokens
+      var swept = state.lastSweepTo;
+      var readSoFar = Math.min(swept, res.readTok);
+      var writeSoFar = Math.max(0, swept - res.firstDiffTok);
+      var usdSoFar = (readSoFar * PRICE.read + writeSoFar * writeRate(state.ttl)) / 1e6;
+      setMeter(swept, readSoFar, writeSoFar, usdSoFar);
+      draw();
+      if (t >= 1) {
+        state.lastSweepTo = res.everSentAtStart === false ? TOTAL : TOTAL;
+        state.anim = null;
+        finishSend(res);
+      } else ensureLoop();
+    } else if (a.type === "zoom") {
+      state.zoom = a.fromZoom + (a.toZoom - a.fromZoom) * e;
+      state.zoomCenterTok = a.centerTok;
+      draw();
+      if (t >= 1) { state.zoom = a.toZoom; state.anim = null; draw(); if (a.done) a.done(); }
+      else ensureLoop();
+    }
+  }
+  function easeInOut(t) { return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2; }
+
+  // ---------- Send flow ----------
+  var statusEl = document.getElementById("status");
+  var sendBtn = document.getElementById("sendBtn");
+
+  function doSend() {
+    if (state.anim) return;
+    var res = simulateSend(state);
+    res.everSentAtStart = state.everSent;
+    state.lastResult = res;
+
+    if (state.reduced) {
+      // cut straight to final state
+      state.everSent = true;
+      state.lastSweepTo = TOTAL;
+      setMeter(TOTAL, res.readTok, res.writeTok, res.usd);
+      draw();
+      finishSend(res);
+      return;
+    }
+
+    sendBtn.disabled = true;
+    state.lastSweepTo = 0;
+    setMeter(0, 0, 0, 0);
+    state.anim = { type: "sweep", t0: performance.now(), dur: 1600, fromTok: 0, toTok: TOTAL };
+    ensureLoop();
+  }
+
+  function finishSend(res) {
+    state.everSent = true;
+    state.lastSweepTo = TOTAL;
+    setMeter(TOTAL, res.readTok, res.writeTok, res.usd);
+    sendBtn.disabled = false;
+    // status line
+    if (res.writeTok === 0) {
+      statusEl.textContent = "Full cache hit. " + fmt(res.readTok) + " tokens read at 0.1x. " + fmtUsd(res.usd) + " versus " + fmtUsd(TOTAL * PRICE.input / 1e6) + " uncached.";
+      statusEl.className = "status hit";
+    } else if (res.readTok === 0) {
+      statusEl.textContent = "Cold cache: the whole tape is written fresh. " + fmt(res.writeTok) + " tokens at " + (state.ttl === "5m" ? "1.25x" : "2x") + " = " + fmtUsd(res.usd) + ".";
+      statusEl.className = "status cold";
+    } else {
+      var pct = (res.writeTok / TOTAL * 100);
+      statusEl.textContent = "Cache matched " + fmt(res.readTok) + " tokens, then your edit forced a rewrite of the last " + fmt(res.writeTok) + " (" + pct.toFixed(1) + "% of the tape). " + fmtUsd(res.usd) + ".";
+      statusEl.className = "status cold";
+    }
+    draw();
+  }
+
+  // ---------- Scar placement ----------
+  function pointerTok(ev) {
+    var rect = canvas.getBoundingClientRect();
+    var x = (ev.clientX != null ? ev.clientX : (ev.touches && ev.touches[0].clientX)) - rect.left;
+    return xToTok(x);
+  }
+  var dragging = false;
+  canvas.addEventListener("pointerdown", function (ev) {
+    if (state.zoom !== 1 || state.anim) return;
+    dragging = true;
+    canvas.setPointerCapture(ev.pointerId);
+    state.scarTok = pointerTok(ev);
+    draw();
+  });
+  canvas.addEventListener("pointermove", function (ev) {
+    if (!dragging) return;
+    state.scarTok = pointerTok(ev);
+    draw();
+  });
+  canvas.addEventListener("pointerup", function () { dragging = false; });
+  canvas.addEventListener("pointercancel", function () { dragging = false; });
+
+  document.getElementById("clearScar").addEventListener("click", function () {
+    state.scarTok = null; draw();
+    statusEl.textContent = "Edit cleared. Send again for a full cache hit.";
+    statusEl.className = "status";
+  });
+  document.getElementById("ttl").addEventListener("change", function (e) {
+    state.ttl = e.target.value;
+    if (state.lastResult) {
+      var res = simulateSend(state);
+      res.everSentAtStart = true;
+      state.lastResult = res;
+      setMeter(TOTAL, res.readTok, res.writeTok, res.usd);
+      finishSend(res);
+    }
+  });
+  sendBtn.addEventListener("click", doSend);
+
+  // ---------- Quiz + reveal zoom ----------
+  var quizCards = document.getElementById("quizCards");
+  var revealCaption = document.getElementById("revealCaption");
+  var answered = false;
+
+  quizCards.addEventListener("click", function (ev) {
+    var btn = ev.target.closest(".qcard");
+    if (!btn || answered) return;
+    answered = true;
+    var val = parseInt(btn.getAttribute("data-v"), 10);
+    var buttons = quizCards.querySelectorAll(".qcard");
+    buttons.forEach(function (b) {
+      b.disabled = true;
+      var v = parseInt(b.getAttribute("data-v"), 10);
+      if (v === 1) b.classList.add("correct");
+      else if (b === btn) b.classList.add("incorrect");
+    });
+
+    var pct = (HEY_TOK / TOTAL * 100);
+    var capHtml = "<strong>" + fmt(TOTAL) + " tokens.</strong> The word you typed is " +
+      pct.toFixed(3) + "% of what was sent. " +
+      (val === 1 ? "You had the right instinct about the word itself, but the wire carries the whole request."
+                 : "The word is ~1 token; everything else is context resent every turn.");
+    revealCaption.innerHTML = capHtml;
+
+    runReveal();
+  });
+
+  function runReveal() {
+    if (state.reduced) {
+      state.zoom = 1; draw();
+      addReplay();
+      return;
+    }
+    // start zoomed in hard on the hey sliver, then pull back to 1
+    state.zoom = 34; // fills viewport with the last sliver
+    state.zoomCenterTok = TOTAL - HEY_TOK * 0.5;
+    draw();
+    state.anim = {
+      type: "zoom", t0: performance.now(), dur: 1500,
+      fromZoom: 34, toZoom: 1, centerTok: TOTAL - HEY_TOK * 0.5,
+      done: addReplay
+    };
+    ensureLoop();
+  }
+
+  var replayAdded = false;
+  function addReplay() {
+    if (replayAdded) return;
+    replayAdded = true;
+    var b = document.createElement("button");
+    b.className = "btn ghost";
+    b.style.marginTop = "10px";
+    b.style.padding = "6px 12px";
+    b.style.fontSize = "13px";
+    b.textContent = "Replay zoom-out";
+    b.addEventListener("click", function () {
+      if (state.anim) return;
+      runReveal();
+    });
+    revealCaption.after(b);
+  }
+
+  // ---------- Reduced motion ----------
+  var mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+  state.reduced = mq.matches;
+  if (state.reduced) {
+    var rm = document.getElementById("rmSummary");
+    rm.classList.add("on");
+    rm.innerHTML = "Reduced-motion mode: animations are skipped. The tape is " + fmt(TOTAL) +
+      " tokens (tools 16,295, system 2,750, messages 15,693 including a 13,083-token catalog). " +
+      "The word you typed is ~1 token. Placing an edit and pressing Send shows the read region (blue, before the edit) and the rewrite region (red, from the edit on).";
+  }
+  if (mq.addEventListener) mq.addEventListener("change", function (e) { state.reduced = e.matches; });
+
+  // ---------- init ----------
+  var ro = new ResizeObserver(function () { resize(); });
+  ro.observe(canvas.parentElement);
+  window.addEventListener("resize", resize);
+  // initial meter shows the un-sent tape total sent count as 0
+  setMeter(0, 0, 0, 0);
+  resize();
+})();
+</script>
