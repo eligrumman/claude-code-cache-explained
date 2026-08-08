@@ -1,0 +1,2434 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Code cache, explained</title>
+<style>
+  /* ---- shared design tokens (defined ONCE for the whole page) ---- */
+  :root{
+    --bg:#faf9f7; --ink:#1c1b1a; --ink-soft:#6b6864; --line:#e5e2dc;
+    --accent:#2f6f4f;            /* single restrained accent */
+    --block-tools:#8aa1b1; --block-system:#b6a68a; --block-catalog:#c0857e; --block-msg:#9aa0a6;
+    --cached:#5b8c6e; --rewrite:#b4726a;  /* low-chroma: cached vs rewritten */
+    --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --maxw:680px;
+  }
+  @media (prefers-color-scheme:dark){:root{--bg:#17161a;--ink:#ececec;--ink-soft:#9a9792;--line:#2b2a2e;}}
+
+  /* ---- page shell ---- */
+  *{box-sizing:border-box;}
+  html{ -webkit-text-size-adjust:100%; }
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:var(--sans); line-height:1.65;
+    font-size:1.02rem;
+    padding:2.5rem 1.15rem 4rem;
+  }
+  main{ max-width:var(--maxw); margin:0 auto; }
+
+  h1{
+    font-size:2rem; line-height:1.2; font-weight:700; letter-spacing:-0.012em;
+    margin:0 0 .35rem;
+  }
+  .subtitle{
+    font-size:1.05rem; color:var(--ink-soft); margin:0 0 2rem;
+  }
+  .subtitle em{ font-style:italic; }
+  h2{
+    font-size:1.34rem; line-height:1.25; font-weight:650; letter-spacing:-0.008em;
+    margin:2.8rem 0 .9rem; padding-top:.4rem;
+  }
+  p{ margin:0 0 1.15rem; }
+  strong{ font-weight:650; color:var(--ink); }
+  a{ color:var(--accent); text-decoration:underline; text-underline-offset:2px; }
+  a:hover{ text-decoration:none; }
+
+  code{
+    font-family:var(--mono); font-size:.9em;
+    background:color-mix(in srgb, var(--ink) 7%, transparent);
+    padding:.08em .35em; border-radius:4px;
+  }
+  pre.sample{
+    font-family:var(--mono); font-size:.82rem; line-height:1.5;
+    background:color-mix(in srgb, var(--ink) 5%, transparent);
+    border:1px solid var(--line); border-radius:10px;
+    padding:1rem 1.15rem; margin:0 0 1.4rem;
+    overflow-x:auto; -webkit-overflow-scrolling:touch;
+  }
+  pre.sample code{ background:none; padding:0; border-radius:0; white-space:pre; }
+
+  ol.steps{ margin:0 0 1.3rem; padding-left:1.4rem; }
+  ol.steps li{ margin:0 0 .4rem; }
+
+  sup.cite{ font-size:.7em; line-height:0; }
+  sup.cite a{ text-decoration:none; padding:0 .05em; }
+  sup.cite a:hover{ text-decoration:underline; }
+
+  ol.refs{ list-style:none; margin:0; padding:0; font-size:.9rem; }
+  ol.refs .ref{
+    margin:0 0 .8rem; padding:0; color:var(--ink-soft); line-height:1.55;
+    scroll-margin-top:1rem;
+  }
+  ol.refs .ref-n{ font-family:var(--mono); color:var(--ink); font-weight:600; }
+  ol.refs .ref-label{ color:var(--ink); }
+  ol.refs .ref a{ word-break:break-word; }
+  ol.refs .ref:target{
+    background:color-mix(in srgb, var(--accent) 12%, transparent);
+    border-radius:6px; padding:.25rem .4rem; margin-left:-.4rem; margin-right:-.4rem;
+  }
+
+  /* widgets bring their own scoped styles; give them breathing room */
+  .fig{ margin:2rem auto; }
+</style>
+</head>
+<body>
+<main>
+<h1>Claude Code cache, explained</h1>
+
+<p class="subtitle"><em>and a practical guide to spending fewer tokens</em></p>
+
+<p>Claude Code sends a lot of tokens on every turn. Your tools, your system prompt, your whole conversation history all get shipped to the model each time you press enter. If you paid full price for all of it on every request, the cost would be enormous. You do not, because of prompt caching. This article explains how that cache works, layer by layer, and then shows you where it quietly stops working and what you can do about it.</p>
+
+<p>Everything here was measured on a real machine running Claude Code 2.1.226 talking directly to Anthropic. I captured live requests with a proxy and analyzed months of local usage logs. Where I cite a number, it comes from that data. Where I cite an issue, it is a link to a public report you can open and read. The links open the raw test results in a new tab so you can check the work yourself.</p>
+
+<h2>What prompt caching is</h2>
+
+<p>Prompt caching lets the model remember the beginning of your request so it does not have to reprocess it every time. When Claude Code sends a request, the server processes the tokens and can store the result. On the next request, if the start of the new request is identical to something already stored, the server skips the work and reuses the stored result. You pay a small fee to read from the cache instead of the full price to process the text again.</p>
+
+<p>This matters because most of what you send does not change between turns. Your tool definitions are the same. Your system prompt is the same. The first twenty messages of your conversation are the same. Caching is what makes an ongoing session affordable: the stable front of the request is read from cache, and only the new tail is processed fresh.</p>
+
+<h2>What the pieces cost</h2>
+
+<p>To reason about caching you need the price of each operation. Everything is a multiplier on the base input price. Regular input is 1x. Reading from cache is 0.1x, a tenth of the price. Writing to the cache (storing something for later) costs more than plain input, because you are paying to process it and to store it. A write to the 5-minute cache is 1.25x. A write to the 1-hour cache is 2x. Output tokens, the model's actual reply, are about 5x.</p>
+
+<section class="fig" id="fig-price-bars">
+  <div class="pb-head">
+    <p class="pb-cap">Every token you send is billed at one of five rates. They are all multiples of the plain input price. Cache read is the cheapest thing on this chart, a rebuild at the 1h write rate is 20 times more.</p>
+  </div>
+
+  <div class="pb-controls">
+    <label class="pb-ctl" for="pb-vol">
+      <span class="pb-ctl-label">Stable prefix you reuse per week</span>
+      <span class="pb-ctl-val" id="pb-vol-out">34 M tokens</span>
+    </label>
+    <input class="pb-range" id="pb-vol" type="range" min="1" max="200" step="1" value="34" aria-describedby="pb-gap-out">
+  </div>
+
+  <canvas id="pb-canvas" role="img" aria-label="Horizontal bars comparing the five billing rates: cache read at 0.1x, input at 1x, cache write 5m at 1.25x, cache write 1h at 2x, and output at 5x."></canvas>
+
+  <p class="pb-detail" id="pb-detail" aria-live="polite">Hover or tap a bar to read its rate.</p>
+
+  <p class="pb-gap" id="pb-gap-out" aria-live="polite"></p>
+</section>
+
+<style>
+
+  #fig-price-bars{
+    font-family:var(--sans); color:var(--ink); background:var(--bg);
+    max-width:var(--maxw); margin:1.5rem auto; padding:1.1rem 1.15rem 1.25rem;
+    border:1px solid var(--line); border-radius:12px; box-sizing:border-box;
+  }
+  #fig-price-bars *{box-sizing:border-box;}
+  #fig-price-bars .pb-head{margin:0 0 .85rem;}
+  #fig-price-bars .pb-cap{
+    margin:0; font-size:.9rem; line-height:1.5; color:var(--ink-soft);
+  }
+  #fig-price-bars .pb-controls{margin:0 0 .5rem;}
+  #fig-price-bars .pb-ctl{
+    display:flex; justify-content:space-between; align-items:baseline; gap:.75rem;
+    font-size:.82rem; margin-bottom:.3rem; flex-wrap:wrap;
+  }
+  #fig-price-bars .pb-ctl-label{color:var(--ink-soft);}
+  #fig-price-bars .pb-ctl-val{
+    font-family:var(--mono); font-size:.82rem; color:var(--ink); font-weight:600;
+    white-space:nowrap;
+  }
+  #fig-price-bars .pb-range{
+    -webkit-appearance:none; appearance:none; width:100%; height:4px; margin:.25rem 0 0;
+    background:var(--line); border-radius:3px; outline:none; cursor:pointer;
+  }
+  #fig-price-bars .pb-range::-webkit-slider-thumb{
+    -webkit-appearance:none; appearance:none; width:18px; height:18px; border-radius:50%;
+    background:var(--accent); border:2px solid var(--bg); cursor:pointer;
+  }
+  #fig-price-bars .pb-range::-moz-range-thumb{
+    width:18px; height:18px; border-radius:50%;
+    background:var(--accent); border:2px solid var(--bg); cursor:pointer;
+  }
+  #fig-price-bars .pb-range:focus-visible{outline:2px solid var(--accent); outline-offset:3px;}
+  #fig-price-bars #pb-canvas{
+    display:block; width:100%; height:auto; touch-action:pan-y;
+  }
+  #fig-price-bars .pb-detail{
+    margin:.55rem 0 0; min-height:1.2em; font-family:var(--mono);
+    font-size:.82rem; line-height:1.4; color:var(--ink);
+  }
+  #fig-price-bars .pb-gap{
+    margin:.4rem 0 0; font-size:.86rem; line-height:1.45; color:var(--ink-soft);
+  }
+  #fig-price-bars .pb-gap b{color:var(--rewrite); font-variant-numeric:tabular-nums;}
+  #fig-price-bars .pb-gap i{font-style:normal; color:var(--cached); font-variant-numeric:tabular-nums;}
+</style>
+
+<script>
+(function(){
+  var section = document.getElementById('fig-price-bars');
+  if(!section) return;
+  var canvas = section.querySelector('#pb-canvas');
+  var ctx = canvas.getContext('2d');
+  var detail = section.querySelector('#pb-detail');
+  var gapOut = section.querySelector('#pb-gap-out');
+  var range = section.querySelector('#pb-vol');
+  var volOut = section.querySelector('#pb-vol-out');
+
+  // ----- cost model -------------------------------------------------------
+  var BASE = 5;            // Opus input price, USD per 1M tokens
+  var RATES = [
+    { key:'read',    mult:0.1,  label:'Cache read',     colorVar:'--cached' },
+    { key:'input',   mult:1,    label:'Input',          colorVar:'--block-msg' },
+    { key:'write5m', mult:1.25, label:'Cache write 5m', colorVar:'--block-system' },
+    { key:'write1h', mult:2,    label:'Cache write 1h', colorVar:'--rewrite' },
+    { key:'output',  mult:5,    label:'Output',         colorVar:'--block-catalog' }
+  ];
+  RATES.forEach(function(r){ r.usd = BASE * r.mult; });
+  function byKey(k){ for(var i=0;i<RATES.length;i++){ if(RATES[i].key===k) return RATES[i]; } return null; }
+  function cost(tokens, rate){ return (tokens / 1e6) * rate.usd; } // tokens -> USD
+
+  var READ = byKey('read'), W5 = byKey('write5m'), W1 = byKey('write1h');
+  var REBUILD_X = W1.usd / READ.usd;   // 20x
+  var WRITE5_X  = W5.usd / READ.usd;   // 12.5x
+
+  // experiment ledger token counts (Section D)
+  var IDENTICAL = 26237;               // identical subagent: cold write, then read same
+  var ONEWORD_WRITE = 14623, ONEWORD_READ = 11602;
+
+  // ----- inline cost-math self-test (gated, never breaks render) ----------
+  try{
+    console.assert(READ.usd === 0.5,  'read = $0.50/M');
+    console.assert(W5.usd   === 6.25, 'write5m = $6.25/M');
+    console.assert(W1.usd   === 10,   'write1h = $10/M');
+    console.assert(byKey('input').usd  === 5,  'input = $5/M');
+    console.assert(byKey('output').usd === 25, 'output = $25/M');
+    console.assert(REBUILD_X === 20,   '1h rebuild is 20x a read');
+    console.assert(WRITE5_X  === 12.5, '5m write is 12.5x a read');
+    // reusing an identical 26,237-token prefix: reading beats rewriting by 12.5x (5m tier)
+    console.assert(cost(IDENTICAL, W5) / cost(IDENTICAL, READ) === 12.5, 'identical prefix read vs 5m rewrite = 12.5x');
+    console.assert(Math.round(cost(IDENTICAL, READ) * 1e5) === 1312, 'read 26,237 tok = $0.01312');
+    // one-word tail diff: partial rewrite plus partial read still totals the whole prefix
+    console.assert(ONEWORD_WRITE + ONEWORD_READ === 26225, 'one-word diff write+read = 26,225 tok');
+    console.assert(Math.round(cost(ONEWORD_WRITE, W5) * 1e5) === 9139, 'one-word 5m write cost');
+  }catch(e){ /* assertions are diagnostic only */ }
+
+  // ----- layout + drawing -------------------------------------------------
+  var css = getComputedStyle(section);
+  function tok(name){ return css.getPropertyValue(name).trim() || '#888'; }
+  function refreshTokens(){ css = getComputedStyle(section); }
+
+  var dpr = 1, cssW = 0, cssH = 0;
+  var padL = 12, padR = 12, topPad = 8, botPad = 8, rowH = 44;
+  var maxMult = 5; // output, the widest bar
+  var bars = [];   // hit-test rects in CSS px
+
+  function measure(){
+    var rect = canvas.getBoundingClientRect();
+    cssW = Math.max(280, rect.width);
+    rowH = Math.max(40, Math.min(cssW * 0.115, 58));
+    cssH = topPad + RATES.length * rowH + botPad;
+    dpr = window.devicePixelRatio || 1;
+    canvas.style.height = cssH + 'px';
+    canvas.width = Math.round(cssW * dpr);
+    canvas.height = Math.round(cssH * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  var hoverIndex = -1, phase = 0;
+
+  function fmtUSD(v){
+    if(v >= 100) return '$' + v.toFixed(0);
+    if(v >= 1)   return '$' + v.toFixed(2);
+    if(v >= 0.01) return '$' + v.toFixed(3);
+    return '$' + v.toFixed(4);
+  }
+  function fmtMult(m){ return (m % 1 === 0 ? m.toFixed(0) : String(m)) + 'x'; }
+
+  function draw(){
+    ctx.clearRect(0, 0, cssW, cssH);
+    var line = tok('--line'), ink = tok('--ink'), soft = tok('--ink-soft');
+    var labelSize = Math.max(11.5, Math.min(cssW * 0.036, 14));
+    var trackX = padL;
+    var trackW = cssW - padL - padR;
+    var barMinPx = 3;
+    bars = [];
+
+    for(var i=0;i<RATES.length;i++){
+      var r = RATES[i];
+      var top = topPad + i * rowH;
+      var barH = Math.max(12, rowH * 0.42);
+      var barY = top + rowH - botPad - barH - 2;
+      var w = Math.max(barMinPx, (r.mult / maxMult) * trackW);
+      var active = (i === hoverIndex);
+      var color = tok(r.colorVar);
+
+      // label line (left) + rate readout (right), on the row's upper line
+      var textY = top + labelSize + 2;
+      ctx.font = (active ? '600 ' : '') + labelSize + 'px ' + tok('--sans');
+      ctx.textBaseline = 'alphabetic';
+      ctx.textAlign = 'left';
+      ctx.fillStyle = active ? ink : soft;
+      ctx.fillText(r.label, trackX, textY);
+
+      ctx.textAlign = 'right';
+      ctx.font = labelSize + 'px ' + tok('--mono');
+      ctx.fillStyle = active ? ink : soft;
+      ctx.fillText(fmtUSD(r.usd) + '/M   ' + fmtMult(r.mult), trackX + trackW, textY);
+
+      // bar track (faint) + fill
+      ctx.fillStyle = withAlpha(line, 0.5);
+      roundRect(trackX, barY, trackW, barH, barH/2); ctx.fill();
+
+      var pulse = 0;
+      if((r.key === 'read' || r.key === 'write1h') && !reduced){
+        pulse = 0.5 + 0.5 * Math.sin(phase + (r.key === 'read' ? 0 : Math.PI));
+      }
+      ctx.fillStyle = color;
+      ctx.globalAlpha = active ? 1 : 0.92;
+      roundRect(trackX, barY, w, barH, barH/2); ctx.fill();
+      ctx.globalAlpha = 1;
+
+      // emphasise the two ends of the 20x gap with a soft ring
+      if((r.key === 'read' || r.key === 'write1h')){
+        ctx.strokeStyle = withAlpha(color, 0.35 + 0.4 * pulse);
+        ctx.lineWidth = 1.5;
+        roundRect(trackX - 1.5, barY - 1.5, w + 3, barH + 3, (barH + 3)/2); ctx.stroke();
+      }
+      if(active){
+        ctx.strokeStyle = ink; ctx.lineWidth = 1.25;
+        roundRect(trackX - 1, barY - 1, w + 2, barH + 2, (barH + 2)/2); ctx.stroke();
+      }
+
+      bars.push({ x:trackX, y:top, w:trackW, h:rowH, index:i });
+    }
+  }
+
+  function roundRect(x, y, w, h, r){
+    r = Math.min(r, w/2, h/2);
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+  function withAlpha(c, a){
+    c = c.trim();
+    if(c[0] === '#'){
+      var h = c.slice(1);
+      if(h.length === 3){ h = h[0]+h[0]+h[1]+h[1]+h[2]+h[2]; }
+      var n = parseInt(h, 16);
+      return 'rgba(' + ((n>>16)&255) + ',' + ((n>>8)&255) + ',' + (n&255) + ',' + a + ')';
+    }
+    return c;
+  }
+
+  function setDetail(i){
+    if(i < 0){ detail.textContent = 'Hover or tap a bar to read its rate.'; return; }
+    var r = RATES[i];
+    var vs = '';
+    if(r.key === 'write1h') vs = '  (20x a cache read)';
+    else if(r.key === 'write5m') vs = '  (12.5x a cache read)';
+    else if(r.key === 'read') vs = '  (the floor, 0.1x input)';
+    detail.textContent = r.label + ': ' + fmtUSD(r.usd) + ' per 1M tokens, ' + fmtMult(r.mult) + ' input.' + vs;
+  }
+
+  function updateGap(){
+    var millions = parseInt(range.value, 10);
+    var tokens = millions * 1e6;
+    volOut.textContent = millions + ' M tokens';
+    var readCost = cost(tokens, READ);
+    var rebuildCost = cost(tokens, W1);
+    gapOut.innerHTML =
+      'Reading that prefix costs <i>' + fmtUSD(readCost) + '</i>. Rebuilding it at the 1h write rate costs <b>' +
+      fmtUSD(rebuildCost) + '</b>. Same tokens, ' + REBUILD_X.toFixed(0) + 'x the price.';
+  }
+
+  // ----- interaction ------------------------------------------------------
+  function pointToRow(ev){
+    var rect = canvas.getBoundingClientRect();
+    var y = ev.clientY - rect.top;
+    for(var i=0;i<bars.length;i++){
+      if(y >= bars[i].y && y <= bars[i].y + bars[i].h) return bars[i].index;
+    }
+    return -1;
+  }
+  function onMove(ev){
+    var i = pointToRow(ev);
+    if(i !== hoverIndex){ hoverIndex = i; setDetail(i); if(reduced) draw(); }
+  }
+  function onLeave(){ hoverIndex = -1; setDetail(-1); if(reduced) draw(); }
+
+  canvas.addEventListener('pointermove', onMove);
+  canvas.addEventListener('pointerdown', function(ev){ onMove(ev); });
+  canvas.addEventListener('pointerleave', onLeave);
+  range.addEventListener('input', updateGap);
+
+  // ----- rAF loop / reduced-motion static fallback ------------------------
+  var reduced = false;
+  try{ reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches; }catch(e){}
+
+  function frame(){
+    phase += 0.045;
+    draw();
+    rafId = requestAnimationFrame(frame);
+  }
+  var rafId = null;
+
+  function relayout(){ refreshTokens(); measure(); draw(); }
+
+  function start(){
+    relayout();
+    updateGap();
+    setDetail(-1);
+    if(!reduced){ rafId = requestAnimationFrame(frame); }
+  }
+
+  var resizeTO = null;
+  window.addEventListener('resize', function(){
+    clearTimeout(resizeTO);
+    resizeTO = setTimeout(relayout, 100);
+  });
+  if(window.matchMedia){
+    try{ window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', relayout); }catch(e){}
+  }
+
+  start();
+})();
+</script>
+
+<p>Put those together and the shape of the problem appears. A cache read is 0.1x and a 1-hour cache write is 2x, so re-writing something you could have read costs twenty times as much. That 20x gap is the whole game. One avoided rebuild is worth twenty keep-warm reads of the same size. Hold that number; it is the reason the rest of this article matters.</p>
+
+<p>In dollars, on Opus, per million tokens: input is $5, a cache read is $0.50, a 5-minute write is $6.25, a 1-hour write is $10, and output is $25. Note that input is $5 per million, not $15. When I quote dollar figures later they are API-equivalent list prices, the value of the tokens, not a subscription bill.</p>
+
+<h2>What a request is made of</h2>
+
+<p>A single Claude Code request is assembled in a fixed order: tools first, then system, then messages. Each part has a very different size.</p>
+
+<p>On a fresh main session where I typed only the word "hey," the request came to about 34,738 tokens. Tool definitions were about 16,295 of that. The system prompt was about 2,750. The messages were about 15,693, and inside the messages a single injected catalog block accounted for about 13,083 tokens on its own. The word I actually typed was about 1 token. Almost none of what you send is what you wrote.</p>
+
+<section class="fig" id="fig-request-layers">
+  <div class="rl-head">
+    <p class="rl-cap">One request is not your typed message. It is a stack: the tool catalog, the system prompt, then the messages. On a fresh main session that stack is about 34,738 tokens before you type a single word. The word you type is roughly one of them.</p>
+  </div>
+
+  <div class="rl-controls">
+    <button class="rl-btn" id="rl-toggle" type="button" aria-pressed="false">Show the word you typed</button>
+    <span class="rl-hint" id="rl-hint">The messages layer is zoomed below. The catalog is the injected block that dominates it.</span>
+  </div>
+
+  <canvas id="rl-canvas" role="img" aria-label="Stacked bar of one request: tools 16,295 tokens, system 2,750, messages 15,693 with a 13,083 token injected catalog highlighted, and up to four cache breakpoints marked. Below it, the messages layer zoomed to show the catalog against the roughly one token you type."></canvas>
+
+  <div class="rl-legend" id="rl-legend" aria-hidden="false"></div>
+
+  <p class="rl-readout" id="rl-readout" aria-live="polite"></p>
+
+  <p class="rl-note" id="rl-note"></p>
+</section>
+
+<style>
+
+  #fig-request-layers{
+    font-family:var(--sans); color:var(--ink); background:var(--bg);
+    max-width:var(--maxw); margin:1.5rem auto; padding:1.1rem 1.15rem 1.25rem;
+    border:1px solid var(--line); border-radius:12px; box-sizing:border-box;
+  }
+  #fig-request-layers *{box-sizing:border-box;}
+  #fig-request-layers .rl-head{margin:0 0 .85rem;}
+  #fig-request-layers .rl-cap{
+    margin:0; font-size:.9rem; line-height:1.5; color:var(--ink-soft);
+  }
+  #fig-request-layers .rl-controls{
+    display:flex; align-items:center; gap:.6rem .75rem; flex-wrap:wrap; margin:0 0 .6rem;
+  }
+  #fig-request-layers .rl-btn{
+    font-family:var(--sans); font-size:.82rem; font-weight:600; color:var(--ink);
+    background:var(--bg); border:1px solid var(--line); border-radius:8px;
+    padding:.4rem .7rem; cursor:pointer; white-space:nowrap; line-height:1.1;
+  }
+  #fig-request-layers .rl-btn[aria-pressed="true"]{
+    color:var(--bg); background:var(--accent); border-color:var(--accent);
+  }
+  #fig-request-layers .rl-btn:focus-visible{outline:2px solid var(--accent); outline-offset:2px;}
+  #fig-request-layers .rl-hint{
+    font-size:.78rem; line-height:1.4; color:var(--ink-soft); flex:1 1 12rem; min-width:11rem;
+  }
+  #fig-request-layers #rl-canvas{
+    display:block; width:100%; height:auto; touch-action:pan-y;
+  }
+  #fig-request-layers .rl-legend{
+    display:flex; flex-wrap:wrap; gap:.35rem .9rem; margin:.7rem 0 0;
+  }
+  #fig-request-layers .rl-leg{
+    display:inline-flex; align-items:center; gap:.4rem; cursor:default;
+    font-size:.8rem; line-height:1.3; color:var(--ink-soft);
+    background:none; border:0; padding:.1rem 0; font-family:var(--sans);
+  }
+  #fig-request-layers .rl-leg[data-active="true"]{color:var(--ink); font-weight:600;}
+  #fig-request-layers .rl-sw{
+    width:.72rem; height:.72rem; border-radius:3px; flex:0 0 auto; display:inline-block;
+  }
+  #fig-request-layers .rl-leg .rl-tk{font-family:var(--mono); font-variant-numeric:tabular-nums;}
+  #fig-request-layers .rl-readout{
+    margin:.7rem 0 0; min-height:2.6em; font-size:.86rem; line-height:1.5; color:var(--ink);
+  }
+  #fig-request-layers .rl-readout b{color:var(--rewrite); font-variant-numeric:tabular-nums; font-weight:600;}
+  #fig-request-layers .rl-readout i{font-style:normal; color:var(--cached); font-variant-numeric:tabular-nums;}
+  #fig-request-layers .rl-readout .rl-num{font-family:var(--mono); font-variant-numeric:tabular-nums;}
+  #fig-request-layers .rl-note{
+    margin:.5rem 0 0; font-size:.8rem; line-height:1.45; color:var(--ink-soft);
+  }
+  #fig-request-layers .rl-note b{color:var(--accent); font-weight:600;}
+</style>
+
+<script>
+(function(){
+  var section = document.getElementById('fig-request-layers');
+  if(!section) return;
+  var canvas  = section.querySelector('#rl-canvas');
+  var ctx     = canvas.getContext('2d');
+  var legendEl= section.querySelector('#rl-legend');
+  var readout = section.querySelector('#rl-readout');
+  var noteEl  = section.querySelector('#rl-note');
+  var toggle  = section.querySelector('#rl-toggle');
+  var hintEl  = section.querySelector('#rl-hint');
+
+  // ----- request model (Section D, main "hey" prefix) ---------------------
+  // tools ~16,295 / system ~2,750 / messages ~15,693; injected catalog ~13,083; typed word ~1 tok.
+  var SEG = [
+    { key:'tools',    label:'tools',            tok:16295, colorVar:'--block-tools',   desc:'the tool catalog, shared and first' },
+    { key:'system',   label:'system',           tok:2750,  colorVar:'--block-system',  desc:'the system prompt' },
+    { key:'catalog',  label:'injected catalog', tok:13083, colorVar:'--block-catalog', desc:'a system-role message appended into the conversation' },
+    { key:'msgOther', label:'other messages',   tok:2610,  colorVar:'--block-msg',     desc:'the rest of the messages, where the word you type lives' }
+  ];
+  var TOTAL    = 34738;                 // full main "hey" prefix
+  var MESSAGES = 15693;                 // catalog + msgOther
+  var TYPED    = 1;                     // the word you type, in tokens
+
+  // cache breakpoints (up to 4). Marked at the layer boundaries where cache_control sits.
+  var BP = [
+    { tok:16295, n:1 },  // end of tools
+    { tok:19045, n:2 },  // end of system
+    { tok:32128, n:3 },  // end of catalog
+    { tok:34738, n:4 }   // tail of the message list
+  ];
+
+  // ----- cost model -------------------------------------------------------
+  var BASE = 5;                         // Opus input price, USD per 1M tokens
+  var MULT = { read:0.1, input:1, write5m:1.25, write1h:2, output:5 };
+  function usd(mult){ return BASE * mult; }             // $/M for a multiplier
+  function cost(tokens, mult){ return (tokens / 1e6) * usd(mult); } // tokens -> USD
+
+  var REBUILD_X = MULT.write1h / MULT.read;             // 20x
+  var WRITE5_X  = MULT.write5m / MULT.read;             // 12.5x
+
+  // experiment ledger token counts (Section D), kept for the self-test
+  var IDENTICAL     = 26237;
+  var ONEWORD_WRITE = 14623, ONEWORD_READ = 11602;
+
+  // ----- inline cost-math self-test (gated, never breaks render) ----------
+  try{
+    // multipliers and their per-1M prices
+    console.assert(usd(MULT.read)    === 0.5,  'read = $0.50/M');
+    console.assert(usd(MULT.write5m) === 6.25, 'write5m = $6.25/M');
+    console.assert(usd(MULT.write1h) === 10,   'write1h = $10/M');
+    console.assert(usd(MULT.input)   === 5,    'input = $5/M');
+    console.assert(usd(MULT.output)  === 25,   'output = $25/M');
+    // the two rebuild penalties this article leans on
+    console.assert(REBUILD_X === 20,   '1h rebuild is 20x a read');
+    console.assert(WRITE5_X  === 12.5, '5m write is 12.5x a read');
+    // layer arithmetic must close to the pinned totals
+    var segSum = SEG[0].tok + SEG[1].tok + SEG[2].tok + SEG[3].tok;
+    console.assert(segSum === TOTAL,        'layers sum to 34,738');
+    console.assert(SEG[2].tok + SEG[3].tok === MESSAGES, 'catalog + other = 15,693 messages');
+    console.assert(TYPED === 1,             'typed word is ~1 token');
+    // identical prefix: reading it back beats a 5m rewrite by 12.5x
+    console.assert(cost(IDENTICAL, MULT.write5m) / cost(IDENTICAL, MULT.read) === 12.5, 'identical read vs 5m rewrite = 12.5x');
+    console.assert(Math.round(cost(IDENTICAL, MULT.read) * 1e5) === 1312, 'read 26,237 tok = $0.01312');
+    // one-word tail diff still churns the whole prefix
+    console.assert(ONEWORD_WRITE + ONEWORD_READ === 26225, 'one-word write + read = 26,225 tok');
+    console.assert(ONEWORD_WRITE === 14623 && ONEWORD_READ === 11602, 'one-word ledger 14,623 write / 11,602 read');
+    // writing the whole 34,738-token prefix at each tier
+    console.assert(Math.round(cost(TOTAL, MULT.write5m) * 1e4) === 2171, 'write 34,738 tok at 5m = $0.2171');
+    console.assert(Math.round(cost(TOTAL, MULT.write1h) * 1e4) === 3474, 'write 34,738 tok at 1h = $0.3474');
+  }catch(e){ /* assertions are diagnostic only */ }
+
+  // ----- colors + helpers -------------------------------------------------
+  var css = getComputedStyle(section);
+  function tok(name){ return (css.getPropertyValue(name) || '').trim() || '#888'; }
+  function refreshTokens(){ css = getComputedStyle(section); }
+  function withAlpha(c, a){
+    c = (c || '').trim();
+    if(c[0] === '#'){
+      var h = c.slice(1);
+      if(h.length === 3){ h = h[0]+h[0]+h[1]+h[1]+h[2]+h[2]; }
+      var n = parseInt(h, 16);
+      return 'rgba(' + ((n>>16)&255) + ',' + ((n>>8)&255) + ',' + (n&255) + ',' + a + ')';
+    }
+    return c;
+  }
+  function roundRect(x, y, w, h, r){
+    r = Math.max(0, Math.min(r, w/2, h/2));
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+  function fmtTok(n){ return Math.round(n).toLocaleString('en-US'); }
+  function fmtUSD(v){
+    if(v >= 1)    return '$' + v.toFixed(2);
+    if(v >= 0.01) return '$' + v.toFixed(3);
+    return '$' + v.toFixed(4);
+  }
+  function fmtPct(v){
+    if(v >= 10) return v.toFixed(0) + '%';
+    if(v >= 1)  return v.toFixed(1) + '%';
+    return v.toFixed(2) + '%';
+  }
+
+  // ----- geometry ---------------------------------------------------------
+  var dpr = 1, W = 0, H = 0;
+  // vertical bands (CSS px), laid out deterministically so nothing overlaps
+  var padX = 4;
+  var bpLabelH = 24;     // room above bar A for breakpoint numbers
+  var barAY, barAH = 40;
+  var connH = 22;        // trapezoid connecting messages region to zoom bar
+  var barBY, barBH = 30;
+  var typedH = 20;       // room below bar B for the "~1 tok" caret label
+  var trackX, trackW;
+
+  function measure(){
+    var rect = canvas.getBoundingClientRect();
+    W = Math.max(280, rect.width);
+    barAY = bpLabelH;
+    barBY = barAY + barAH + connH;
+    H = barBY + barBH + typedH;
+    trackX = padX;
+    trackW = W - padX * 2;
+    dpr = window.devicePixelRatio || 1;
+    canvas.style.height = H + 'px';
+    canvas.width  = Math.round(W * dpr);
+    canvas.height = Math.round(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  // token -> x within the request bar (A) and within the messages zoom bar (B)
+  function xA(t){ return trackX + (t / TOTAL) * trackW; }
+  function xB(t){ return trackX + (t / MESSAGES) * trackW; }
+
+  var MSG_START = SEG[0].tok + SEG[1].tok; // token offset where messages begin (19,045)
+  var TYPED_IN_MSG = SEG[2].tok + Math.round(SEG[3].tok * 0.5); // caret sits mid "other messages"
+
+  // ----- state ------------------------------------------------------------
+  var hoverKey = null;
+  var showTyped = false;
+  var anim = 0;                 // 0..1 reveal progress
+  var reduced = false;
+  try{ reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches; }catch(e){}
+
+  // ----- drawing ----------------------------------------------------------
+  function segColor(seg, revealed){
+    var c = tok(seg.colorVar);
+    if(hoverKey && hoverKey !== seg.key) return withAlpha(c, revealed ? 0.4 : 0.4);
+    return c;
+  }
+
+  function drawStackRect(x, y, w, h, seg, isB){
+    var revealW = trackX + trackW * ease(anim);   // left-to-right reveal edge
+    var right = Math.min(x + w, revealW);
+    var vis = right - x;
+    if(vis <= 0.5) return;
+    ctx.fillStyle = segColor(seg, true);
+    ctx.globalAlpha = 1;
+    // square inner edges, rounded only at the two outer ends of each bar
+    roundRect(x, y, vis, h, 3);
+    ctx.fill();
+    // hover outline
+    if(hoverKey === seg.key && vis > 1){
+      ctx.strokeStyle = tok('--ink');
+      ctx.lineWidth = 1.25;
+      roundRect(x + 0.6, y + 0.6, vis - 1.2, h - 1.2, 2.5);
+      ctx.stroke();
+    }
+  }
+
+  function ease(t){ return t < 1 ? 1 - Math.pow(1 - t, 3) : 1; }
+
+  function draw(){
+    ctx.clearRect(0, 0, W, H);
+    var revealW = trackX + trackW * ease(anim);
+    var line = tok('--line'), soft = tok('--ink-soft'), ink = tok('--ink'), accent = tok('--accent');
+    var f = Math.max(9.5, Math.min(W * 0.03, 11.5));
+
+    // faint tracks
+    ctx.fillStyle = withAlpha(line, 0.6);
+    roundRect(trackX, barAY, trackW, barAH, 4); ctx.fill();
+    roundRect(trackX, barBY, trackW, barBH, 4); ctx.fill();
+
+    // --- bar A: the request layers ---
+    var accT = 0;
+    for(var i=0;i<SEG.length;i++){
+      var seg = SEG[i];
+      drawStackRect(xA(accT), barAY, (seg.tok/TOTAL)*trackW, barAH, seg, false);
+      accT += seg.tok;
+    }
+
+    // --- connector trapezoid: messages region of A maps to the whole zoom bar B ---
+    var mx0 = xA(MSG_START), mx1 = xA(TOTAL);
+    ctx.fillStyle = withAlpha(accent, 0.07);
+    ctx.beginPath();
+    ctx.moveTo(mx0, barAY + barAH);
+    ctx.lineTo(mx1, barAY + barAH);
+    ctx.lineTo(trackX + trackW, barBY);
+    ctx.lineTo(trackX, barBY);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = withAlpha(accent, 0.35);
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(mx0, barAY + barAH); ctx.lineTo(trackX, barBY); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(mx1, barAY + barAH); ctx.lineTo(trackX + trackW, barBY); ctx.stroke();
+
+    // --- bar B: messages zoomed (catalog + other) ---
+    drawStackRect(xB(0),         barBY, (SEG[2].tok/MESSAGES)*trackW, barBH, SEG[2], true); // catalog
+    drawStackRect(xB(SEG[2].tok),barBY, (SEG[3].tok/MESSAGES)*trackW, barBH, SEG[3], true); // other
+
+    // --- breakpoint markers on bar A (draw last so they sit on top) ---
+    for(var b=0;b<BP.length;b++){
+      var bx = xA(BP[b].tok);
+      if(bx > revealW + 0.5) continue;
+      // clamp the glyph anchor so neither the first nor the last number is clipped
+      var gx = Math.max(trackX + 5, Math.min(bx, trackX + trackW - 5));
+      // connector line from just under the triangle down to the bar
+      ctx.strokeStyle = withAlpha(ink, 0.55);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(bx, barAY - 3);
+      ctx.lineTo(bx, barAY + barAH);
+      ctx.stroke();
+      // triangle pointing down at the boundary
+      ctx.fillStyle = ink;
+      ctx.beginPath();
+      ctx.moveTo(bx, barAY - 3);
+      ctx.lineTo(bx - 3.2, barAY - 8);
+      ctx.lineTo(bx + 3.2, barAY - 8);
+      ctx.closePath();
+      ctx.fill();
+      // number, anchored from the top edge so it never clips
+      ctx.font = '600 ' + f + 'px ' + tok('--mono');
+      ctx.fillStyle = ink;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.fillText(String(BP[b].n), gx, 1);
+    }
+
+    // --- the typed word caret under bar B (toggled) ---
+    if(showTyped){
+      var tx = xB(TYPED_IN_MSG);
+      if(revealW >= tx){
+        var cy = barBY + barBH;
+        ctx.strokeStyle = accent; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(tx, barBY); ctx.lineTo(tx, cy + 5); ctx.stroke();
+        // caret triangle pointing up at the bar
+        ctx.fillStyle = accent;
+        ctx.beginPath();
+        ctx.moveTo(tx, cy + 5);
+        ctx.lineTo(tx - 4, cy + 11);
+        ctx.lineTo(tx + 4, cy + 11);
+        ctx.closePath();
+        ctx.fill();
+        // label, kept inside the canvas by measuring and shifting the anchor
+        ctx.font = '600 ' + f + 'px ' + tok('--mono');
+        var lbl = '~1 tok you typed';
+        var lw = ctx.measureText(lbl).width;
+        var lx = tx;
+        ctx.textAlign = 'center';
+        if(lx + lw/2 > trackX + trackW){ ctx.textAlign = 'right'; lx = trackX + trackW; }
+        else if(lx - lw/2 < trackX){ ctx.textAlign = 'left'; lx = trackX; }
+        ctx.textBaseline = 'alphabetic';
+        ctx.fillStyle = accent;
+        ctx.fillText(lbl, lx, cy + typedH - 1);
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // ----- readout + legend -------------------------------------------------
+  function baseReadout(){
+    var w5 = cost(TOTAL, MULT.write5m), w1 = cost(TOTAL, MULT.write1h), rd = cost(TOTAL, MULT.read);
+    readout.innerHTML =
+      '<span class="rl-num">' + fmtTok(TOTAL) + '</span> tokens go up before you type a word. ' +
+      'Writing that prefix once costs <b>' + fmtUSD(w5) + '</b> at the 5 minute tier or <b>' + fmtUSD(w1) + '</b> at 1 hour. ' +
+      'Reading it back next turn costs <i>' + fmtUSD(rd) + '</i>. Rebuilding instead of reading is ' + REBUILD_X.toFixed(0) + 'x, whatever its size.';
+  }
+
+  function segReadout(seg){
+    var share = seg.tok / TOTAL * 100;
+    var w5 = cost(seg.tok, MULT.write5m), w1 = cost(seg.tok, MULT.write1h), rd = cost(seg.tok, MULT.read);
+    var extra = '';
+    if(seg.key === 'catalog'){
+      extra = ' It is ' + fmtPct(seg.tok / MESSAGES * 100) + ' of the messages layer on its own.';
+    } else if(seg.key === 'msgOther'){
+      extra = ' The word you type is about 1 of these ' + fmtTok(seg.tok) + ' tokens.';
+    } else if(seg.key === 'tools'){
+      extra = ' First in the request and shared, so it caches well when your MCP set is stable.';
+    }
+    readout.innerHTML =
+      '<strong>' + seg.label + '</strong>, ' + seg.desc + '. ' +
+      '<span class="rl-num">' + fmtTok(seg.tok) + '</span> tokens, ' + fmtPct(share) + ' of the request. ' +
+      'Write ' + fmtUSD(w5) + ' at 5m, ' + fmtUSD(w1) + ' at 1h. Read <i>' + fmtUSD(rd) + '</i>.' + extra;
+  }
+
+  function updateReadout(){
+    if(hoverKey){
+      for(var i=0;i<SEG.length;i++){ if(SEG[i].key === hoverKey){ segReadout(SEG[i]); return; } }
+    }
+    baseReadout();
+  }
+
+  function buildLegend(){
+    legendEl.innerHTML = '';
+    SEG.forEach(function(seg){
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'rl-leg';
+      b.setAttribute('data-key', seg.key);
+      b.innerHTML =
+        '<span class="rl-sw" style="background:var(' + seg.colorVar + ')"></span>' +
+        '<span>' + seg.label + '</span>' +
+        '<span class="rl-tk">' + fmtTok(seg.tok) + '</span>';
+      b.addEventListener('mouseenter', function(){ setHover(seg.key); });
+      b.addEventListener('mouseleave', function(){ setHover(null); });
+      b.addEventListener('focus', function(){ setHover(seg.key); });
+      b.addEventListener('blur', function(){ setHover(null); });
+      legendEl.appendChild(b);
+    });
+  }
+
+  function syncLegend(){
+    var kids = legendEl.children;
+    for(var i=0;i<kids.length;i++){
+      kids[i].setAttribute('data-active', kids[i].getAttribute('data-key') === hoverKey ? 'true' : 'false');
+    }
+  }
+
+  function setNote(){
+    noteEl.innerHTML =
+      'The numbered marks are cache breakpoints, up to <b>4</b> per request, at the layer boundaries. ' +
+      'Mark 4 sits at the tail of the message list, after the catalog and after your task. ' +
+      'Anything before the first change reads cheap. Everything from that change to the next breakpoint gets rewritten.';
+  }
+
+  // ----- interaction ------------------------------------------------------
+  function keyAt(px, py){
+    // bar A hit rows
+    if(py >= barAY - bpLabelH && py <= barAY + barAH){
+      var tA = ((px - trackX) / trackW) * TOTAL;
+      var acc = 0;
+      for(var i=0;i<SEG.length;i++){
+        if(tA >= acc && tA < acc + SEG[i].tok) return SEG[i].key;
+        acc += SEG[i].tok;
+      }
+      if(tA >= TOTAL - 1) return SEG[SEG.length-1].key;
+    }
+    // bar B hit row (messages zoom)
+    if(py >= barBY && py <= barBY + barBH + typedH){
+      var tB = ((px - trackX) / trackW) * MESSAGES;
+      return tB < SEG[2].tok ? 'catalog' : 'msgOther';
+    }
+    return null;
+  }
+
+  function setHover(k){
+    if(k === hoverKey) return;
+    hoverKey = k;
+    syncLegend();
+    updateReadout();
+    schedule();
+  }
+
+  function onMove(ev){
+    var rect = canvas.getBoundingClientRect();
+    setHover(keyAt(ev.clientX - rect.left, ev.clientY - rect.top));
+  }
+  function onLeave(){ setHover(null); }
+
+  canvas.addEventListener('pointermove', onMove);
+  canvas.addEventListener('pointerdown', onMove);
+  canvas.addEventListener('pointerleave', onLeave);
+
+  toggle.addEventListener('click', function(){
+    showTyped = !showTyped;
+    toggle.setAttribute('aria-pressed', showTyped ? 'true' : 'false');
+    toggle.textContent = showTyped ? 'Hide the word you typed' : 'Show the word you typed';
+    hintEl.textContent = showTyped
+      ? 'The green caret is roughly where your one token lands, inside the other-messages band.'
+      : 'The messages layer is zoomed below. The catalog is the injected block that dominates it.';
+    schedule();
+  });
+
+  // ----- single rAF loop / reduced-motion static fallback -----------------
+  var rafId = null;
+  function frame(){
+    rafId = null;
+    if(!reduced && anim < 1){ anim = Math.min(1, anim + 0.04); }
+    else { anim = 1; }
+    draw();
+    if(!reduced && anim < 1){ rafId = requestAnimationFrame(frame); }
+  }
+  function schedule(){ if(rafId == null){ rafId = requestAnimationFrame(frame); } }
+
+  function relayout(){ refreshTokens(); measure(); draw(); }
+
+  var resizeTO = null;
+  window.addEventListener('resize', function(){
+    clearTimeout(resizeTO);
+    resizeTO = setTimeout(relayout, 100);
+  });
+  if(window.matchMedia){
+    try{ window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', relayout); }catch(e){}
+  }
+
+  function start(){
+    buildLegend();
+    setNote();
+    baseReadout();
+    refreshTokens();
+    measure();
+    if(reduced){ anim = 1; draw(); }
+    else { schedule(); }
+  }
+  start();
+})();
+</script>
+
+<p>The order is correct and deliberate. Tools go first because they are the most stable and the most shared across every request. System comes next. Messages come last because they change most. Caching rewards exactly this: put the stable material at the front so it can be reused, and let the volatile material trail at the end where a rewrite is cheap.</p>
+
+<h2>Prefix caching and breakpoints</h2>
+
+<p>The cache does not store arbitrary pieces of your request. It stores prefixes. A prefix is the request from the very first token up to some marked point. Claude Code marks those points with a breakpoint, a small flag on a chunk of the request that says "this is a spot worth caching up to." A request can carry up to four breakpoints, and a prefix has to be at least about 1,024 tokens before it is eligible to cache at all.</p>
+
+<p>When a new request arrives, the server compares it against what it has stored, starting from the first token. It reuses the stored prefix up to the deepest breakpoint whose fingerprint still matches, which is the last breakpoint before the first place the two requests differ. Everything before that point is read at 0.1x. Everything after it is processed fresh and, if it sits under a breakpoint, written back to the cache.</p>
+
+<section class="fig" id="fig-prefix-match">
+  <div class="pm-head">
+    <h3 class="pm-title">Longest-prefix match</h3>
+    <p class="pm-lede">The server reuses your request up to the deepest fingerprint it still has, then rewrites everything from the first byte that changed down to the next breakpoint. Pick what changes and watch the match point move. Green is read at 0.1x. Red is rewritten at the write rate.</p>
+  </div>
+
+  <div class="pm-controls" role="group" aria-label="Prefix match controls">
+    <div class="pm-ctl">
+      <span class="pm-ctl-label">What changed</span>
+      <div class="pm-seg" role="group" aria-label="What changed">
+        <button type="button" class="pm-btn" data-scenario="none" aria-pressed="false">Nothing</button>
+        <button type="button" class="pm-btn is-on" data-scenario="task" aria-pressed="true">Task word</button>
+        <button type="button" class="pm-btn" data-scenario="system" aria-pressed="false">System prompt</button>
+        <button type="button" class="pm-btn" data-scenario="tools" aria-pressed="false">Tools / MCP</button>
+      </div>
+    </div>
+    <div class="pm-ctl">
+      <span class="pm-ctl-label">Cache TTL</span>
+      <div class="pm-seg" role="group" aria-label="Cache TTL">
+        <button type="button" class="pm-btn is-on" data-ttl="5m" aria-pressed="true">5m</button>
+        <button type="button" class="pm-btn" data-ttl="1h" aria-pressed="false">1h</button>
+      </div>
+    </div>
+    <label class="pm-switch">
+      <input type="checkbox" id="pm-ideal">
+      <span>Add a breakpoint before the stable block</span>
+    </label>
+  </div>
+
+  <div class="pm-canvas-wrap">
+    <canvas class="pm-canvas" role="img" aria-label="Stacked request segments showing which parts are cached versus rewritten"></canvas>
+  </div>
+
+  <div class="pm-stats" aria-live="polite">
+    <div class="pm-stat pm-stat-read">
+      <span class="pm-stat-k">Cached read</span>
+      <span class="pm-stat-v" data-out="read-tok">11,602</span>
+      <span class="pm-stat-sub" data-out="read-cost">$0.0058</span>
+    </div>
+    <div class="pm-stat pm-stat-write">
+      <span class="pm-stat-k">Rewritten</span>
+      <span class="pm-stat-v" data-out="write-tok">14,623</span>
+      <span class="pm-stat-sub" data-out="write-cost">$0.0914</span>
+    </div>
+    <div class="pm-stat pm-stat-total">
+      <span class="pm-stat-k">Total this spawn</span>
+      <span class="pm-stat-v" data-out="total-cost">$0.0972</span>
+      <span class="pm-stat-sub" data-out="total-tok">26,225 tok billed</span>
+    </div>
+  </div>
+
+  <p class="pm-note" data-out="note"></p>
+  <p class="pm-legend"><span class="pm-chip pm-chip-read">read 0.1x</span><span class="pm-chip pm-chip-write">write 1.25x (5m) / 2x (1h)</span><span class="pm-chip pm-chip-bp">breakpoint</span></p>
+</section>
+
+<style>
+
+  #fig-prefix-match{
+    box-sizing:border-box; max-width:var(--maxw); margin:0 auto; padding:0;
+    font-family:var(--sans); color:var(--ink); line-height:1.5;
+  }
+  #fig-prefix-match *{box-sizing:border-box;}
+  #fig-prefix-match .pm-head{margin:0 0 14px;}
+  #fig-prefix-match .pm-title{font-size:1.02rem; font-weight:650; margin:0 0 6px; letter-spacing:.01em;}
+  #fig-prefix-match .pm-lede{font-size:.9rem; color:var(--ink-soft); margin:0;}
+
+  #fig-prefix-match .pm-controls{display:flex; flex-wrap:wrap; gap:12px 18px; align-items:flex-end; margin:0 0 14px;}
+  #fig-prefix-match .pm-ctl{display:flex; flex-direction:column; gap:5px; min-width:0;}
+  #fig-prefix-match .pm-ctl-label{font-size:.72rem; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-soft);}
+  #fig-prefix-match .pm-seg{display:inline-flex; flex-wrap:wrap; gap:4px; background:var(--line); padding:3px; border-radius:9px;}
+  #fig-prefix-match .pm-btn{
+    font-family:var(--sans); font-size:.8rem; color:var(--ink-soft);
+    background:transparent; border:0; padding:6px 11px; border-radius:6px; cursor:pointer;
+    transition:background .15s,color .15s; white-space:nowrap;
+  }
+  #fig-prefix-match .pm-btn:hover{color:var(--ink);}
+  #fig-prefix-match .pm-btn.is-on{background:var(--bg); color:var(--ink); box-shadow:0 1px 2px rgba(0,0,0,.10); font-weight:600;}
+  #fig-prefix-match .pm-btn:focus-visible{outline:2px solid var(--accent); outline-offset:2px;}
+  #fig-prefix-match .pm-switch{display:inline-flex; align-items:center; gap:8px; font-size:.82rem; color:var(--ink); cursor:pointer; user-select:none;}
+  #fig-prefix-match .pm-switch input{width:16px; height:16px; accent-color:var(--accent); cursor:pointer;}
+
+  #fig-prefix-match .pm-canvas-wrap{width:100%; margin:0 0 14px;}
+  #fig-prefix-match .pm-canvas{display:block; width:100%;}
+
+  #fig-prefix-match .pm-stats{display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:0 0 12px;}
+  #fig-prefix-match .pm-stat{border:1px solid var(--line); border-radius:10px; padding:10px 12px; display:flex; flex-direction:column; gap:2px; min-width:0;}
+  #fig-prefix-match .pm-stat-k{font-size:.7rem; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-soft);}
+  #fig-prefix-match .pm-stat-v{font-family:var(--mono); font-size:1.02rem; font-weight:600; color:var(--ink); overflow-wrap:anywhere;}
+  #fig-prefix-match .pm-stat-sub{font-family:var(--mono); font-size:.78rem; color:var(--ink-soft); overflow-wrap:anywhere;}
+  #fig-prefix-match .pm-stat-read{border-left:3px solid var(--cached);}
+  #fig-prefix-match .pm-stat-write{border-left:3px solid var(--rewrite);}
+  #fig-prefix-match .pm-stat-total{border-left:3px solid var(--accent);}
+
+  #fig-prefix-match .pm-note{font-size:.85rem; color:var(--ink-soft); margin:0 0 10px; min-height:1.2em;}
+  #fig-prefix-match .pm-note b{color:var(--ink); font-weight:600;}
+  #fig-prefix-match .pm-legend{display:flex; flex-wrap:wrap; gap:8px; margin:0; font-size:.72rem;}
+  #fig-prefix-match .pm-chip{display:inline-flex; align-items:center; gap:6px; padding:3px 8px; border-radius:20px; color:var(--ink-soft); border:1px solid var(--line);}
+  #fig-prefix-match .pm-chip::before{content:""; width:9px; height:9px; border-radius:50%; flex:0 0 auto;}
+  #fig-prefix-match .pm-chip-read::before{background:var(--cached);}
+  #fig-prefix-match .pm-chip-write::before{background:var(--rewrite);}
+  #fig-prefix-match .pm-chip-bp::before{background:var(--accent); border-radius:1px; width:3px; height:11px;}
+
+  @media (max-width:460px){
+    #fig-prefix-match .pm-stats{grid-template-columns:1fr;}
+    #fig-prefix-match .pm-controls{gap:10px 12px;}
+  }
+</style>
+
+<script>
+(function(){
+  "use strict";
+  var root = document.getElementById("fig-prefix-match");
+  if(!root) return;
+  var canvas = root.querySelector(".pm-canvas");
+  var ctx = canvas.getContext("2d");
+  if(!ctx) return;
+
+  var rmq = (window.matchMedia) ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
+  var reduce = !!(rmq && rmq.matches);
+
+  // ----- request segments (subagent layout, A1). Sizes are estimates; the two
+  // measured scenarios (identical, one-word tail diff) are pinned to exact usage numbers. -----
+  var segments = [
+    {name:"tools (MCP + built-ins)", tok:10178, block:"--block-tools",   bp:true },
+    {name:"system[0] cch nonce",     tok:224,   block:"--block-system",  bp:false, sub:"no cache, red herring" },
+    {name:"system[1] agent prompt",  tok:800,   block:"--block-system",  bp:true },
+    {name:"system[2]",               tok:400,   block:"--block-system",  bp:true },
+    {name:"msg[0] task prompt",      tok:5049,  block:"--block-msg",     bp:false, sub:"variable, ends in the typed word" },
+    {name:"msg[1] stable notice",    tok:9574,  block:"--block-catalog", bp:true,  sub:"identical every spawn" }
+  ];
+  var MSG0 = 4, MSG1 = 5;
+
+  // ----- pricing / multipliers (Section D) -----
+  var MULT  = { input:1, read:0.1, write5m:1.25, write1h:2, output:5 };
+  var PRICE = { input:5, read:0.5, write5m:6.25, write1h:10, output:25 }; // $ per 1M, Opus
+  var IDENTICAL_READ = 26237; // measured full-cache read
+
+  var state = { scenario:"task", ttl:"5m", ideal:false };
+
+  // firstDiff index per scenario (99 = nothing differs)
+  function firstDiffOf(s){ return ({ none:99, task:MSG0, system:2, tools:0 })[s]; }
+
+  function statusFor(i, firstDiff){
+    if(i < firstDiff) return "cached";
+    if(state.ideal && state.scenario === "task" && i === MSG1) return "cached"; // extra bp re-caches the stable block
+    return "rewrite";
+  }
+
+  function model(){
+    var firstDiff = firstDiffOf(state.scenario);
+    var statuses = [], cachedTok = 0, writeTok = 0;
+    for(var i=0;i<segments.length;i++){
+      var st = statusFor(i, firstDiff);
+      statuses.push(st);
+      if(st === "cached") cachedTok += segments[i].tok; else writeTok += segments[i].tok;
+    }
+    var read = cachedTok, write = writeTok;
+    if(state.scenario === "none"){ read = IDENTICAL_READ; write = 0; }
+    return { firstDiff:firstDiff, statuses:statuses, read:read, write:write };
+  }
+
+  function writeMult(){ return state.ttl === "1h" ? MULT.write1h : MULT.write5m; }
+  function writeRate(){ return state.ttl === "1h" ? PRICE.write1h : PRICE.write5m; }
+  function readCost(tokens){ return tokens / 1e6 * PRICE.read; }
+  function writeCost(tokens){ return tokens / 1e6 * writeRate(); }
+  function penaltyX(){ return writeMult() / MULT.read; } // 20 (1h) or 12.5 (5m)
+
+  // ----- formatting -----
+  function fmtInt(n){ return Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ","); }
+  function fmtUSD(n){
+    if(n === 0) return "$0";
+    var d = n < 0.1 ? 4 : (n < 10 ? 3 : 2);
+    return "$" + n.toFixed(d);
+  }
+
+  // ----- palette (re-read on theme change) -----
+  var pal = {};
+  function readVar(name){ return getComputedStyle(root).getPropertyValue(name).trim(); }
+  function hexA(hex, a){
+    var h = hex.replace("#","");
+    if(h.length === 3) h = h[0]+h[0]+h[1]+h[1]+h[2]+h[2];
+    var r=parseInt(h.slice(0,2),16), g=parseInt(h.slice(2,4),16), b=parseInt(h.slice(4,6),16);
+    if(isNaN(r)) return hex;
+    return "rgba("+r+","+g+","+b+","+a+")";
+  }
+  function refreshPalette(){
+    pal.bg      = readVar("--bg")      || "#faf9f7";
+    pal.ink     = readVar("--ink")     || "#1c1b1a";
+    pal.inkSoft = readVar("--ink-soft")|| "#6b6864";
+    pal.line    = readVar("--line")    || "#e5e2dc";
+    pal.accent  = readVar("--accent")  || "#2f6f4f";
+    pal.cached  = readVar("--cached")  || "#5b8c6e";
+    pal.rewrite = readVar("--rewrite") || "#b4726a";
+    pal.blocks = {
+      "--block-tools":   readVar("--block-tools")   || "#8aa1b1",
+      "--block-system":  readVar("--block-system")  || "#b6a68a",
+      "--block-catalog": readVar("--block-catalog") || "#c0857e",
+      "--block-msg":     readVar("--block-msg")     || "#9aa0a6"
+    };
+  }
+
+  // ----- layout / sizing with devicePixelRatio -----
+  var L = { cssW:320, cssH:360, dpr:1, pad:12, bandH:46, gap:8 };
+  function layout(){
+    var wrap = canvas.parentNode;
+    var cssW = Math.max(280, (wrap && wrap.clientWidth) ? wrap.clientWidth : 320);
+    var bandH = cssW < 380 ? 44 : 46;
+    var gap = 8, pad = 12;
+    var cssH = pad*2 + segments.length*(bandH+gap) - gap;
+    var dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+    L = { cssW:cssW, cssH:cssH, dpr:dpr, pad:pad, bandH:bandH, gap:gap };
+    canvas.style.height = cssH + "px";
+    canvas.width  = Math.round(cssW * dpr);
+    canvas.height = Math.round(cssH * dpr);
+  }
+
+  function bandTop(i){ return L.pad + i*(L.bandH + L.gap); }
+  function boundaryY(firstDiff){
+    if(firstDiff >= segments.length) return bandTop(segments.length-1) + L.bandH + L.gap/2; // below all
+    if(firstDiff <= 0) return L.pad - L.gap/2; // above all
+    return bandTop(firstDiff) - L.gap/2;
+  }
+
+  function fitText(text, maxW){
+    if(ctx.measureText(text).width <= maxW) return text;
+    var t = text;
+    while(t.length > 1 && ctx.measureText(t + "…").width > maxW) t = t.slice(0,-1);
+    return t + "…";
+  }
+  function roundRect(x,y,w,h,r){
+    r = Math.min(r, w/2, h/2);
+    ctx.beginPath();
+    ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
+    ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath();
+  }
+
+  // ----- animation state -----
+  var matchY = 0, targetY = 0, phase = 0, inited = false;
+
+  function draw(){
+    var m = model();
+    targetY = boundaryY(m.firstDiff);
+    if(!inited){ matchY = targetY; inited = true; }
+    if(reduce){ matchY = targetY; }
+    else { matchY += (targetY - matchY) * 0.18; if(Math.abs(targetY - matchY) < 0.4) matchY = targetY; }
+
+    var dpr = L.dpr, W = L.cssW, pad = L.pad, bandH = L.bandH;
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    ctx.clearRect(0,0,W,L.cssH);
+    ctx.textBaseline = "middle";
+
+    var x = pad, w = W - pad*2;
+    var chipText = "#f7f6f4";
+
+    for(var i=0;i<segments.length;i++){
+      var seg = segments[i], y = bandTop(i), st = m.statuses[i];
+      var blockC = pal.blocks[seg.block] || pal.inkSoft;
+      var stC = st === "cached" ? pal.cached : pal.rewrite;
+
+      // band base + status tint
+      roundRect(x, y, w, bandH, 8);
+      ctx.fillStyle = hexA(blockC, 0.12); ctx.fill();
+      roundRect(x, y, w, bandH, 8);
+      ctx.fillStyle = hexA(stC, 0.16); ctx.fill();
+      ctx.lineWidth = 1; ctx.strokeStyle = hexA(stC, 0.5); ctx.stroke();
+
+      // left accent strip in the block color
+      ctx.save();
+      roundRect(x, y, w, bandH, 8); ctx.clip();
+      ctx.fillStyle = blockC; ctx.fillRect(x, y, 5, bandH);
+      ctx.restore();
+
+      // right status chip
+      var chipLabel = st === "cached" ? "read 0.1x" : "write " + writeMult() + "x";
+      ctx.font = "600 11px " + (readVar("--mono") || "monospace");
+      var chipTW = ctx.measureText(chipLabel).width;
+      var chipW = chipTW + 18, chipH = 20;
+      var chipX = x + w - 10 - chipW, chipY = y + (bandH - chipH)/2;
+      roundRect(chipX, chipY, chipW, chipH, 10);
+      ctx.fillStyle = stC; ctx.fill();
+      ctx.fillStyle = chipText; ctx.textAlign = "center";
+      ctx.fillText(chipLabel, chipX + chipW/2, chipY + chipH/2 + 0.5);
+
+      // text zone (left), clamped so it never reaches the chip
+      var textMaxX = chipX - 12;
+      var nameMaxW = textMaxX - (x + 14);
+      ctx.textAlign = "left";
+      ctx.fillStyle = pal.ink;
+      ctx.font = "600 13px " + (readVar("--sans") || "sans-serif");
+      ctx.fillText(fitText(seg.name, nameMaxW), x + 14, y + 16);
+
+      ctx.font = "11px " + (readVar("--mono") || "monospace");
+      ctx.fillStyle = pal.inkSoft;
+      var detail = fmtInt(seg.tok) + " tok" + (seg.sub ? "  ·  " + seg.sub : "");
+      ctx.fillText(fitText(detail, nameMaxW), x + 14, y + 32);
+
+      // breakpoint tick along the bottom edge
+      if(seg.bp){
+        var by = y + bandH;
+        ctx.save();
+        ctx.strokeStyle = hexA(pal.accent, 0.75);
+        ctx.lineWidth = 2; ctx.setLineDash([5,4]);
+        ctx.beginPath(); ctx.moveTo(x+8, by); ctx.lineTo(x + w - 8, by); ctx.stroke();
+        ctx.restore();
+        ctx.font = "600 10px " + (readVar("--mono") || "monospace");
+        ctx.fillStyle = pal.accent; ctx.textAlign = "right";
+        ctx.fillText("bp " + state.ttl, x + w - 8, by);
+      }
+    }
+
+    // added-breakpoint indicator (ideal toggle, task scenario)
+    if(state.ideal && state.scenario === "task"){
+      var ay = bandTop(MSG1) - L.gap/2;
+      ctx.save();
+      ctx.strokeStyle = pal.cached; ctx.lineWidth = 2.5; ctx.setLineDash([3,3]);
+      ctx.beginPath(); ctx.moveTo(x, ay); ctx.lineTo(x + w, ay); ctx.stroke();
+      ctx.restore();
+      ctx.font = "600 10px " + (readVar("--mono") || "monospace");
+      ctx.textAlign = "left"; ctx.fillStyle = pal.cached;
+      ctx.fillText("added bp", x + 6, ay - 7 < L.pad ? ay + 8 : ay - 7);
+    }
+
+    // match line
+    var my = Math.max(L.pad - 6, Math.min(L.cssH - 4, matchY));
+    ctx.save();
+    ctx.strokeStyle = pal.accent; ctx.lineWidth = 2; ctx.setLineDash([]);
+    ctx.beginPath(); ctx.moveTo(x, my); ctx.lineTo(x + w, my); ctx.stroke();
+
+    // moving shimmer dot
+    if(!reduce){
+      var dotX = x + 10 + (Math.sin(phase) * 0.5 + 0.5) * (w - 20);
+      ctx.beginPath(); ctx.arc(dotX, my, 3, 0, Math.PI*2);
+      ctx.fillStyle = pal.accent; ctx.fill();
+    }
+    ctx.restore();
+
+    // match label pill
+    var lbl = "match point";
+    ctx.font = "600 11px " + (readVar("--sans") || "sans-serif");
+    var lw = ctx.measureText(lbl).width + 16;
+    var lx = x + w/2 - lw/2, lyc = my;
+    roundRect(lx, lyc - 10, lw, 20, 10);
+    ctx.fillStyle = pal.accent; ctx.fill();
+    ctx.fillStyle = chipText; ctx.textAlign = "center";
+    ctx.fillText(lbl, x + w/2, lyc + 0.5);
+  }
+
+  function updateReadout(){
+    var m = model();
+    var rC = readCost(m.read), wC = writeCost(m.write), total = rC + wC;
+    setOut("read-tok",   fmtInt(m.read) + " tok");
+    setOut("read-cost",  fmtUSD(rC));
+    setOut("write-tok",  fmtInt(m.write) + " tok");
+    setOut("write-cost", fmtUSD(wC));
+    setOut("total-cost", fmtUSD(total));
+    setOut("total-tok",  fmtInt(m.read + m.write) + " tok billed");
+
+    var note = "";
+    var px = penaltyX();
+    if(state.scenario === "none"){
+      note = "Byte-identical up to every breakpoint, so the whole prefix reads back at 0.1x and nothing is rewritten. This is the cheapest a spawn gets.";
+    } else if(state.scenario === "task"){
+      if(state.ideal){
+        // savings vs real CC (no extra bp)
+        var realWrite = 14623, idealWrite = m.write;
+        var saved = realWrite - idealWrite;
+        var savedUSD = writeCost(realWrite) - writeCost(idealWrite);
+        note = "One breakpoint between the task and the stable block keeps the <b>" + fmtInt(segments[MSG1].tok) + " tok</b> notice cached. The rewrite drops to just the task: <b>" + fmtInt(saved) + " tok</b> (" + fmtUSD(savedUSD) + ") of write avoided every spawn.";
+      } else {
+        note = "There is no breakpoint between the task and the stable block, so one changed word rewrites everything down to the tail: the task plus the identical <b>" + fmtInt(segments[MSG1].tok) + " tok</b> notice gets dragged along. Every rewritten token costs <b>" + px + "x</b> what a read would.";
+      }
+    } else if(state.scenario === "system"){
+      note = "Change lands above the task, so the match point climbs. Only <b>tools</b> stays cached; the system prompt, task, and stable block all rebuild at " + px + "x.";
+    } else {
+      note = "The tools block is first in the stream. Change it and nothing before the first byte survives: a cold, full rewrite of the whole base.";
+    }
+    var el = root.querySelector('[data-out="note"]');
+    if(el) el.innerHTML = note;
+  }
+  function setOut(key, val){
+    var el = root.querySelector('[data-out="'+key+'"]');
+    if(el) el.textContent = val;
+  }
+
+  // ----- controls -----
+  function syncButtons(){
+    root.querySelectorAll("[data-scenario]").forEach(function(b){
+      var on = b.getAttribute("data-scenario") === state.scenario;
+      b.classList.toggle("is-on", on); b.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+    root.querySelectorAll("[data-ttl]").forEach(function(b){
+      var on = b.getAttribute("data-ttl") === state.ttl;
+      b.classList.toggle("is-on", on); b.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+  }
+  root.querySelectorAll("[data-scenario]").forEach(function(b){
+    b.addEventListener("click", function(){ state.scenario = b.getAttribute("data-scenario"); onChange(); });
+  });
+  root.querySelectorAll("[data-ttl]").forEach(function(b){
+    b.addEventListener("click", function(){ state.ttl = b.getAttribute("data-ttl"); onChange(); });
+  });
+  var idealBox = root.querySelector("#pm-ideal");
+  if(idealBox) idealBox.addEventListener("change", function(){ state.ideal = idealBox.checked; onChange(); });
+
+  function onChange(){ syncButtons(); updateReadout(); if(reduce) draw(); }
+
+  // ----- loop (single, bounded; stops itself under reduced-motion) -----
+  var running = false, rafId = 0;
+  function frame(){
+    if(reduce){ running = false; rafId = 0; return; }
+    phase += 0.045;
+    draw();
+    rafId = requestAnimationFrame(frame);
+  }
+  function startLoop(){
+    if(running || reduce) return;
+    running = true;
+    rafId = requestAnimationFrame(frame);
+  }
+
+  function boot(){
+    refreshPalette(); layout(); syncButtons(); updateReadout(); draw();
+    startLoop();
+  }
+
+  // resize
+  var rt;
+  window.addEventListener("resize", function(){
+    clearTimeout(rt);
+    rt = setTimeout(function(){ refreshPalette(); layout(); draw(); }, 80);
+  });
+  if(window.ResizeObserver){
+    var ro = new ResizeObserver(function(){ layout(); draw(); });
+    ro.observe(canvas.parentNode);
+  }
+  // theme change
+  if(window.matchMedia){
+    var cm = window.matchMedia("(prefers-color-scheme: dark)");
+    var onTheme = function(){ refreshPalette(); draw(); };
+    if(cm.addEventListener) cm.addEventListener("change", onTheme); else if(cm.addListener) cm.addListener(onTheme);
+  }
+  // reduced-motion change
+  if(rmq){
+    var onRM = function(){ reduce = rmq.matches; draw(); startLoop(); };
+    if(rmq.addEventListener) rmq.addEventListener("change", onRM); else if(rmq.addListener) rmq.addListener(onRM);
+  }
+
+  boot();
+
+  // ---------------------------------------------------------------------------
+  // Inline cost-math self-test. Gated in try/catch so it can never break render.
+  // ---------------------------------------------------------------------------
+  try{
+    var ok = (typeof console !== "undefined" && console.assert) ? console.assert.bind(console) : function(){};
+    var near = function(a,b,eps){ return Math.abs(a-b) <= (eps||1e-9); };
+
+    // multipliers
+    ok(MULT.read === 0.1, "read multiplier must be 0.1x");
+    ok(MULT.write5m === 1.25, "write-5m multiplier must be 1.25x");
+    ok(MULT.write1h === 2, "write-1h multiplier must be 2x");
+    // rebuild penalties
+    ok(MULT.write1h / MULT.read === 20, "1h rewrite penalty must be 20x");
+    ok(MULT.write5m / MULT.read === 12.5, "5m rewrite penalty must be 12.5x");
+
+    // identical spawn: full read, zero write
+    (function(){
+      var s = state; var save = { scenario:s.scenario, ideal:s.ideal, ttl:s.ttl };
+      s.scenario = "none"; s.ideal = false;
+      var m = model();
+      ok(m.read === 26237, "identical spawn reads 26,237");
+      ok(m.write === 0, "identical spawn writes 0");
+      // one-word tail diff (real CC, no extra breakpoint)
+      s.scenario = "task"; s.ideal = false;
+      m = model();
+      ok(m.write === 14623, "one-word diff rewrites 14,623 (got " + m.write + ")");
+      ok(m.read === 11602, "one-word diff reads 11,602 (got " + m.read + ")");
+      // adding the breakpoint keeps the stable block cached
+      s.ideal = true;
+      m = model();
+      ok(m.write === 5049, "with added bp, rewrite drops to the task 5,049 (got " + m.write + ")");
+      ok(m.read === 11602 + 9574, "with added bp, read gains the stable block (got " + m.read + ")");
+      ok((14623 - m.write) === 9574, "added bp saves the 9,574-tok stable block of write");
+      s.scenario = save.scenario; s.ideal = save.ideal; s.ttl = save.ttl;
+    })();
+
+    // dollar ledger, Opus rates
+    ok(near(readCost(26237), 26237/1e6*0.5), "read cost = tok x $0.50/M");
+    state.ttl = "5m";
+    ok(near(writeCost(14623), 14623/1e6*6.25), "write-5m cost = tok x $6.25/M");
+    state.ttl = "1h";
+    ok(near(writeCost(14623), 14623/1e6*10), "write-1h cost = tok x $10/M");
+    ok(penaltyX() === 20, "1h penalty readout = 20x");
+    state.ttl = "5m";
+    ok(penaltyX() === 12.5, "5m penalty readout = 12.5x");
+  }catch(e){ /* self-test only; never affect rendering */ }
+})();
+</script>
+
+<p>The consequence is strict: identical is not enough. The request has to be identical up to a breakpoint. If the first difference between this request and the last one is early, everything after that first difference gets rewritten, even parts that are byte-for-byte the same as before. The cache cannot skip ahead to a later matching island. It matches from the front, and it stops at the first change.</p>
+
+<h2>The fingerprint</h2>
+
+<p>The way the server tracks all this is worth understanding, because it explains why placement is everything. Each breakpoint carries a key that is a rolling hash of the entire token stream up to that point. Think of it like a git commit SHA: it summarizes the whole token stream up to that point, the chunk at the breakpoint and everything before it, cumulatively. The prefix at breakpoint four contains the prefix at breakpoint three, which contains the prefix at breakpoint two, and so on. They nest.</p>
+
+<p>On a lookup, the server takes these fingerprints and finds the deepest one that still exists in the cache. It reuses everything up to that fingerprint, then recomputes and writes back everything after it. This is why a change early in the request is so expensive. It changes the fingerprint of every breakpoint downstream of it, because each of those fingerprints included the bytes you just changed. One early edit invalidates the whole chain below it.</p>
+
+<h2>How the cache stays warm, and when it expires</h2>
+
+<p>A cached prefix does not live forever. It has a time to live, a TTL, and the clock resets every time the prefix is read. As long as you keep using a session, each turn reads the warm prefix and pushes the expiry out again. The cache stays warm because you keep touching it.</p>
+
+<p>There are two TTL settings. The default is 5 minutes. There is also a 1-hour option <sup class="cite"><a href="#ref-9">9</a></sup>. A 5-minute prefix that goes untouched for six minutes is gone, and the next request rebuilds it from scratch at write price. A 1-hour prefix survives a coffee break and a meeting. The trade-off is the write price: a 1-hour write is 2x versus 1.25x for 5 minutes, so you pay more up front for the longer guarantee.</p>
+
+<section class="fig" id="fig-ttl-scrubber">
+  <div class="tsc-head">
+    <div class="tsc-title">TTL and the rolling window: keep it warm, or let it rebuild</div>
+    <div class="tsc-sub">Drag the timeline to set how long you go idle before your next request. The cache warms on the first write, stays warm until idle passes the TTL, then a resume pays a full rebuild. Pinging holds it warm at a read each interval.</div>
+  </div>
+
+  <div class="tsc-controls" role="group" aria-label="TTL scrubber controls">
+    <div class="tsc-seg" role="radiogroup" aria-label="Cache TTL">
+      <span class="tsc-seg-label">TTL</span>
+      <button type="button" class="tsc-seg-btn" data-ttl="5" role="radio" aria-checked="false">5 min (subagent default)</button>
+      <button type="button" class="tsc-seg-btn is-on" data-ttl="60" role="radio" aria-checked="true">1 h (main)</button>
+    </div>
+    <label class="tsc-check"><input type="checkbox" id="tsc-ping"> keep-warm ping</label>
+    <label class="tsc-check"><input type="checkbox" id="tsc-hook"> SessionStart hook (poisoned catalog)</label>
+  </div>
+
+  <canvas id="tsc-canvas" tabindex="0" role="slider" aria-label="Idle duration before resume" aria-valuemin="0" aria-valuenow="0" aria-valuetext="idle"></canvas>
+
+  <div class="tsc-ledger">
+    <div class="tsc-idle-line">Idle before resume: <b id="tsc-idle">--</b> <span class="tsc-hint">(drag the marker, or use arrow keys)</span></div>
+    <div class="tsc-cols">
+      <div class="tsc-col" id="tsc-col-ping" data-role="ping">
+        <div class="tsc-col-h"><span class="tsc-sw" style="background:var(--cached)"></span>Keep-warm ping</div>
+        <div class="tsc-col-tok" id="tsc-ping-tok">--</div>
+        <div class="tsc-col-cost" id="tsc-ping-cost">$--</div>
+      </div>
+      <div class="tsc-col" id="tsc-col-exp" data-role="exp">
+        <div class="tsc-col-h"><span class="tsc-sw" style="background:var(--rewrite)"></span>Let it expire, rebuild</div>
+        <div class="tsc-col-tok" id="tsc-exp-tok">--</div>
+        <div class="tsc-col-cost" id="tsc-exp-cost">$--</div>
+      </div>
+    </div>
+    <div class="tsc-verdict" id="tsc-verdict">--</div>
+    <div class="tsc-poison" id="tsc-poison" hidden></div>
+    <div class="tsc-note">One avoided rebuild is worth 20 keep-warm pings on a 1 h cache, 12.5 on a 5 min cache. Same ratio at any prefix size.</div>
+  </div>
+</section>
+
+<style>
+
+  #fig-ttl-scrubber{
+    box-sizing:border-box; max-width:var(--maxw); margin:0 auto; padding:16px;
+    font-family:var(--sans); color:var(--ink); background:var(--bg);
+    border:1px solid var(--line); border-radius:12px;
+  }
+  #fig-ttl-scrubber *{box-sizing:border-box;}
+  #fig-ttl-scrubber .tsc-head{margin-bottom:12px;}
+  #fig-ttl-scrubber .tsc-title{font-size:16px; font-weight:650; line-height:1.3;}
+  #fig-ttl-scrubber .tsc-sub{font-size:12.5px; color:var(--ink-soft); line-height:1.45; margin-top:4px;}
+
+  #fig-ttl-scrubber .tsc-controls{
+    display:flex; flex-wrap:wrap; gap:10px 14px; align-items:center; margin-bottom:12px;
+  }
+  #fig-ttl-scrubber .tsc-seg{display:flex; align-items:center; gap:6px; flex-wrap:wrap;}
+  #fig-ttl-scrubber .tsc-seg-label{font-size:12px; color:var(--ink-soft); font-weight:600;}
+  #fig-ttl-scrubber .tsc-seg-btn{
+    font-family:var(--sans); font-size:12px; color:var(--ink-soft);
+    background:transparent; border:1px solid var(--line); border-radius:999px;
+    padding:5px 11px; cursor:pointer; line-height:1;
+  }
+  #fig-ttl-scrubber .tsc-seg-btn.is-on{
+    color:var(--bg); background:var(--accent); border-color:var(--accent); font-weight:600;
+  }
+  #fig-ttl-scrubber .tsc-check{
+    display:inline-flex; align-items:center; gap:6px; font-size:12.5px; color:var(--ink); cursor:pointer;
+  }
+  #fig-ttl-scrubber .tsc-check input{accent-color:var(--accent); width:15px; height:15px; margin:0;}
+
+  #fig-ttl-scrubber #tsc-canvas{
+    display:block; width:100%; height:200px; touch-action:none; cursor:ew-resize;
+    border-radius:8px; outline:none;
+  }
+  #fig-ttl-scrubber #tsc-canvas:focus-visible{box-shadow:0 0 0 2px var(--accent);}
+
+  #fig-ttl-scrubber .tsc-ledger{margin-top:12px;}
+  #fig-ttl-scrubber .tsc-idle-line{font-size:13px; margin-bottom:8px;}
+  #fig-ttl-scrubber .tsc-idle-line b{font-variant-numeric:tabular-nums;}
+  #fig-ttl-scrubber .tsc-hint{color:var(--ink-soft); font-size:11.5px;}
+
+  #fig-ttl-scrubber .tsc-cols{display:grid; grid-template-columns:1fr 1fr; gap:10px;}
+  #fig-ttl-scrubber .tsc-col{
+    border:1px solid var(--line); border-radius:8px; padding:10px; background:transparent;
+    transition:border-color .15s, background .15s;
+  }
+  #fig-ttl-scrubber .tsc-col.is-active{border-color:var(--accent); background:color-mix(in srgb, var(--accent) 7%, transparent);}
+  #fig-ttl-scrubber .tsc-col.is-cheaper .tsc-col-cost{color:var(--cached);}
+  #fig-ttl-scrubber .tsc-col-h{display:flex; align-items:center; gap:7px; font-size:12px; font-weight:600; color:var(--ink);}
+  #fig-ttl-scrubber .tsc-sw{width:11px; height:11px; border-radius:3px; flex:none;}
+  #fig-ttl-scrubber .tsc-col-tok{font-size:11.5px; color:var(--ink-soft); margin-top:6px; font-family:var(--mono);}
+  #fig-ttl-scrubber .tsc-col-cost{font-size:20px; font-weight:700; margin-top:4px; font-variant-numeric:tabular-nums; font-family:var(--mono);}
+
+  #fig-ttl-scrubber .tsc-verdict{margin-top:10px; font-size:13px; font-weight:600; line-height:1.4;}
+  #fig-ttl-scrubber .tsc-poison{
+    margin-top:8px; font-size:12px; color:var(--rewrite); line-height:1.4;
+    padding:7px 9px; border:1px solid color-mix(in srgb, var(--rewrite) 40%, var(--line)); border-radius:7px;
+  }
+  #fig-ttl-scrubber .tsc-note{margin-top:10px; font-size:11.5px; color:var(--ink-soft); line-height:1.45;}
+
+  @media (max-width:430px){
+    #fig-ttl-scrubber .tsc-cols{grid-template-columns:1fr;}
+    #fig-ttl-scrubber .tsc-col-cost{font-size:18px;}
+  }
+</style>
+
+<script>(function(){
+  var root = document.getElementById('fig-ttl-scrubber');
+  if(!root) return;
+  var canvas = root.querySelector('#tsc-canvas');
+  var ctx = canvas.getContext('2d');
+
+  // ---- cost model constants (pinned to rubric Section D) ----
+  var PREFIX = 34738;      // main "hey" prefix, tokens
+  var POISON_W = 24300;    // SessionStart-hook dynamic line rewrite (~24,300)
+  // Opus prices, dollars per 1M tokens
+  var D_IN = 5, D_READ = 0.5, D_W5 = 6.25, D_W1 = 10;
+  // multipliers vs input
+  var M_READ = D_READ/D_IN;   // 0.1
+  var M_W5   = D_W5/D_IN;      // 1.25
+  var M_W1   = D_W1/D_IN;      // 2
+  // prices per token (used for money)
+  var P_READ = D_READ/1e6, P_W5 = D_W5/1e6, P_W1 = D_W1/1e6;
+  function breakEvenH(writeMult, ttlMin){ return writeMult*ttlMin/6; }
+
+  // ---- inline cost-math self-test (gated so it can never break rendering) ----
+  try{
+    var EPS = 1e-9;
+    function near(a, b){ return Math.abs(a - b) < EPS; }
+    console.assert(near(M_READ, 0.1),  'read multiplier must be 0.1x');
+    console.assert(near(M_W5, 1.25),   'write5m multiplier must be 1.25x');
+    console.assert(near(M_W1, 2),      'write1h multiplier must be 2x');
+    console.assert(near(M_W1/M_READ, 20),   'rebuild penalty on 1h must be 20x');
+    console.assert(near(M_W5/M_READ, 12.5),  'rebuild penalty on 5m must be 12.5x');
+    // ledger experiment numbers
+    var IDENTICAL = 26237, ONEWORD_W = 14623, ONEWORD_R = 11602;
+    console.assert(IDENTICAL === 26237, 'identical subagent full-cache = 26,237');
+    console.assert(ONEWORD_W === 14623 && ONEWORD_R === 11602, 'one-word diff = 14,623 write / 11,602 read');
+    // cost math resolves as expected: a read costs 0.1x an input token
+    console.assert(near(IDENTICAL * P_READ, IDENTICAL * D_IN/1e6 * M_READ), 'read cost = tokens * 0.1x input');
+    // break-even rule (write-mult x TTL-min)/6
+    console.assert(Math.round(breakEvenH(2, 60)) === 20, '1h break-even ~= 20h idle');
+    console.assert(Math.abs(breakEvenH(1.25, 5) - 1.0417) < 0.01, '5m break-even ~= 1h idle');
+  }catch(e){ /* self-test only, never blocks the widget */ }
+
+  // ---- state ----
+  var ttlMin = 60;         // 60 or 5
+  var ping = false;        // keep-warm ping on/off
+  var hook = false;        // SessionStart hook poisoned on/off
+  var idleFrac = 0.5;      // resume position as fraction of Tmax
+  var reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  var W = 0, H = 0, dpr = 1;
+  var col = {};
+
+  function readColors(){
+    var cs = getComputedStyle(root);
+    function v(n){ return cs.getPropertyValue(n).trim(); }
+    col = {
+      ink:v('--ink'), soft:v('--ink-soft'), line:v('--line'), accent:v('--accent'),
+      cached:v('--cached'), rewrite:v('--rewrite'), bg:v('--bg')
+    };
+  }
+
+  function ttlWriteMult(){ return ttlMin === 60 ? M_W1 : M_W5; }
+  function ttlWritePrice(){ return ttlMin === 60 ? P_W1 : P_W5; }
+  function pingIntervalMin(){ return ttlMin * 0.9; } // ping just before expiry
+  function tmaxMin(){ return breakEvenH(ttlWriteMult(), ttlMin) * 60 / 0.6; } // break-even sits at ~60% width
+  function idleMin(){ return idleFrac * tmaxMin(); }
+
+  function fmtT(min){
+    if(min < 1) return '<1 min';
+    if(min < 90) return Math.round(min) + ' min';
+    var h = min/60;
+    return (h < 10 ? h.toFixed(1) : Math.round(h)) + ' h';
+  }
+  function fmt$(x){
+    if(x >= 1) return '$' + x.toFixed(2);
+    if(x >= 0.01) return '$' + x.toFixed(3);
+    return '$' + x.toFixed(4);
+  }
+  function fmtTok(n){ return Math.round(n).toLocaleString('en-US'); }
+
+  // ---- cost computation for the current idle+resume ----
+  function compute(){
+    var T = idleMin();
+    var wp = ttlWritePrice();
+    var warm = T <= ttlMin; // still warm without any ping
+    var poison = hook ? POISON_W * wp : 0;
+    var poisonTok = hook ? POISON_W : 0;
+
+    // Keep-warm ping path: read every interval to stay warm, resume is a read.
+    var nPings = T > 0 ? Math.floor(T / pingIntervalMin()) : 0;
+    var pingReadTok = nPings * PREFIX + PREFIX;      // pings + one resume read
+    var pingCost = pingReadTok * P_READ + poison;
+
+    // Expire path: nothing during idle; resume warm-read if within TTL, else full rebuild.
+    var expReadTok = warm ? PREFIX : 0;
+    var expWriteTok = warm ? 0 : PREFIX;
+    var expCost = expReadTok * P_READ + expWriteTok * wp + poison;
+
+    return {
+      T:T, warm:warm, nPings:nPings, poison:poison, poisonTok:poisonTok,
+      ping:{ readTok:pingReadTok, writeTok:0, cost:pingCost },
+      exp:{ readTok:expReadTok, writeTok:expWriteTok, cost:expCost }
+    };
+  }
+
+  // ---- DOM readout ----
+  var el = {
+    idle: root.querySelector('#tsc-idle'),
+    pingTok: root.querySelector('#tsc-ping-tok'),
+    pingCost: root.querySelector('#tsc-ping-cost'),
+    expTok: root.querySelector('#tsc-exp-tok'),
+    expCost: root.querySelector('#tsc-exp-cost'),
+    colPing: root.querySelector('#tsc-col-ping'),
+    colExp: root.querySelector('#tsc-col-exp'),
+    verdict: root.querySelector('#tsc-verdict'),
+    poison: root.querySelector('#tsc-poison')
+  };
+
+  function updateReadout(m){
+    el.idle.textContent = fmtT(m.T);
+    canvas.setAttribute('aria-valuenow', Math.round(m.T));
+    canvas.setAttribute('aria-valuetext', fmtT(m.T) + ' idle, ' + (m.warm ? 'still warm' : 'expired'));
+
+    var pt = m.poisonTok;
+    el.pingTok.textContent = m.nPings + ' ping' + (m.nPings===1?'':'s') + ' + resume read = ' + fmtTok(m.ping.readTok) + ' read' + (pt? ' + '+fmtTok(pt)+' rewrite' : '');
+    el.pingCost.textContent = fmt$(m.ping.cost);
+
+    if(m.exp.writeTok){
+      el.expTok.textContent = 'rebuild ' + fmtTok(m.exp.writeTok) + ' write' + (pt? ' + '+fmtTok(pt)+' rewrite' : '');
+    }else{
+      el.expTok.textContent = 'warm ' + fmtTok(m.exp.readTok) + ' read' + (pt? ' + '+fmtTok(pt)+' rewrite' : '');
+    }
+    el.expCost.textContent = fmt$(m.exp.cost);
+
+    el.colPing.classList.toggle('is-active', ping);
+    el.colExp.classList.toggle('is-active', !ping);
+    var pingCheaper = m.ping.cost < m.exp.cost - 1e-12;
+    el.colPing.classList.toggle('is-cheaper', pingCheaper);
+    el.colExp.classList.toggle('is-cheaper', !pingCheaper && m.exp.cost < m.ping.cost - 1e-12);
+
+    var hi = Math.max(m.ping.cost, m.exp.cost), lo = Math.min(m.ping.cost, m.exp.cost);
+    var save = hi > 0 ? Math.round((1 - lo/hi) * 100) : 0;
+    var beH = breakEvenH(ttlWriteMult(), ttlMin);
+    if(Math.abs(m.ping.cost - m.exp.cost) < 1e-9){
+      el.verdict.textContent = 'Both paths cost the same here. This is the break-even, near ' + (beH<10?beH.toFixed(1):Math.round(beH)) + ' h idle.';
+    }else if(pingCheaper){
+      el.verdict.textContent = 'Pinging wins by ' + save + '%. Below the ' + (beH<10?beH.toFixed(1):Math.round(beH)) + ' h break-even, holding the cache warm beats one rebuild.';
+    }else{
+      el.verdict.textContent = 'Letting it expire wins by ' + save + '%. Past the ' + (beH<10?beH.toFixed(1):Math.round(beH)) + ' h break-even, one rebuild is cheaper than that many pings.';
+    }
+
+    if(hook){
+      el.poison.hidden = false;
+      el.poison.textContent = 'SessionStart hook poisons the prefix: every resume rewrites ' + fmtTok(POISON_W) + ' tokens (' + fmt$(m.poison) + ') no matter how warm the cache was. Strip the dynamic line to recover it.';
+    }else{
+      el.poison.hidden = true;
+    }
+  }
+
+  // ---- canvas rendering ----
+  function resize(){
+    var rect = canvas.getBoundingClientRect();
+    W = rect.width;
+    H = Math.max(180, Math.min(260, W * 0.52));
+    canvas.style.height = H + 'px';
+    dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(W * dpr);
+    canvas.height = Math.round(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    render();
+  }
+
+  function xForT(t, x0, x1){
+    var Tm = tmaxMin();
+    return x0 + (t / Tm) * (x1 - x0);
+  }
+
+  function roundRect(c, x, y, w, h, r){
+    r = Math.min(r, h/2, w/2);
+    c.beginPath();
+    c.moveTo(x+r, y); c.arcTo(x+w, y, x+w, y+h, r);
+    c.arcTo(x+w, y+h, x, y+h, r); c.arcTo(x, y+h, x, y, r);
+    c.arcTo(x, y, x+w, y, r); c.closePath();
+  }
+
+  function draw(now){
+    ctx.clearRect(0, 0, W, H);
+    var padL = 14, padR = 14, x0 = padL, x1 = W - padR;
+    var baseY = Math.round(H * 0.46);
+    var trackH = 16;
+    var Tm = tmaxMin();
+    var m = compute();
+    var resumeX = xForT(m.T, x0, x1);
+    var ttlX = xForT(ttlMin, x0, x1);
+    var beX = xForT(breakEvenH(ttlWriteMult(), ttlMin)*60, x0, x1);
+
+    // track base (cold background)
+    ctx.font = '11px ' + getComputedStyle(root).getPropertyValue('--sans');
+    roundRect(ctx, x0, baseY - trackH/2, x1 - x0, trackH, 6);
+    ctx.fillStyle = col.line; ctx.fill();
+
+    // warm region
+    var warmEndX = ping ? x1 : Math.min(ttlX, x1);
+    var pulse = (!reduced) ? 0.14 * (0.5 + 0.5 * Math.sin(now/700)) : 0;
+    roundRect(ctx, x0, baseY - trackH/2, Math.max(0, warmEndX - x0), trackH, 6);
+    ctx.fillStyle = col.cached; ctx.globalAlpha = 0.85 - pulse; ctx.fill(); ctx.globalAlpha = 1;
+
+    // cold/expired region hatch label
+    if(!ping && ttlX < x1){
+      ctx.save();
+      ctx.beginPath();
+      roundRect(ctx, warmEndX, baseY - trackH/2, x1 - warmEndX, trackH, 6);
+      ctx.clip();
+      ctx.strokeStyle = col.rewrite; ctx.globalAlpha = 0.5; ctx.lineWidth = 1;
+      for(var hx = warmEndX - trackH; hx < x1 + trackH; hx += 7){
+        ctx.beginPath(); ctx.moveTo(hx, baseY + trackH); ctx.lineTo(hx + trackH*2, baseY - trackH); ctx.stroke();
+      }
+      ctx.restore(); ctx.globalAlpha = 1;
+    }
+
+    // TTL edge marker (where warmth ends without pinging)
+    if(!ping){
+      ctx.strokeStyle = col.soft; ctx.lineWidth = 1; ctx.setLineDash([3,3]);
+      ctx.beginPath(); ctx.moveTo(ttlX, baseY - trackH/2 - 6); ctx.lineTo(ttlX, baseY + trackH/2 + 6); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = col.soft; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      ctx.fillText('TTL ' + fmtT(ttlMin), Math.min(Math.max(ttlX, x0+22), x1-22), baseY + trackH/2 + 9);
+    }
+
+    // ping ticks
+    if(ping){
+      ctx.fillStyle = col.accent;
+      for(var i = 1; i <= m.nPings; i++){
+        var px = xForT(i * pingIntervalMin(), x0, x1);
+        if(px > resumeX) break;
+        ctx.beginPath(); ctx.moveTo(px, baseY - trackH/2 - 3);
+        ctx.lineTo(px - 3, baseY - trackH/2 - 9); ctx.lineTo(px + 3, baseY - trackH/2 - 9);
+        ctx.closePath(); ctx.fill();
+      }
+    }
+
+    // start marker (cold write at t=0)
+    ctx.fillStyle = col.rewrite;
+    ctx.beginPath(); ctx.arc(x0, baseY, 5, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = col.soft; ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+    // Sit clear above the ping-tick tips (which reach trackH/2+9 above the track),
+    // so the label and the tick markers never collide near the origin.
+    ctx.fillText('session start (write)', x0, baseY - trackH/2 - 14);
+
+    // break-even marker
+    ctx.strokeStyle = col.accent; ctx.globalAlpha = 0.55; ctx.lineWidth = 1; ctx.setLineDash([2,3]);
+    ctx.beginPath(); ctx.moveTo(beX, baseY + trackH/2 + 2); ctx.lineTo(beX, H - 20); ctx.stroke();
+    ctx.setLineDash([]); ctx.globalAlpha = 1;
+    ctx.fillStyle = col.accent; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+    var beLbl = 'break-even';
+    var beLblX = Math.min(Math.max(beX, x0 + ctx.measureText(beLbl).width/2), x1 - ctx.measureText(beLbl).width/2);
+    ctx.fillText(beLbl, beLblX, H - 6);
+
+    // resume marker (draggable)
+    var resumeWarm = ping || m.warm;
+    var rc = resumeWarm ? col.cached : col.rewrite;
+    ctx.strokeStyle = rc; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(resumeX, baseY - trackH/2 - 4); ctx.lineTo(resumeX, baseY + trackH/2 + 4); ctx.stroke();
+    ctx.fillStyle = rc; ctx.beginPath(); ctx.arc(resumeX, baseY, 6, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = col.bg; ctx.beginPath(); ctx.arc(resumeX, baseY, 2.5, 0, Math.PI*2); ctx.fill();
+
+    // resume label (top row, clamped inside)
+    ctx.fillStyle = col.ink; ctx.textBaseline = 'top'; ctx.font = '600 11.5px ' + getComputedStyle(root).getPropertyValue('--sans');
+    var lbl = 'resume: ' + fmtT(m.T) + ' idle, ' + (resumeWarm ? 'warm read' : 'rebuild');
+    var lw = ctx.measureText(lbl).width;
+    ctx.textAlign = 'center';
+    var lx = Math.min(Math.max(resumeX, x0 + lw/2), x1 - lw/2);
+    ctx.fillText(lbl, lx, 6);
+    ctx.font = '11px ' + getComputedStyle(root).getPropertyValue('--sans');
+
+    updateReadout(m);
+  }
+
+  // ---- single rAF loop ----
+  var rafId = null, animating = false;
+  function frame(now){ draw(now); rafId = requestAnimationFrame(frame); }
+  function render(){
+    if(reduced){ if(rafId){ cancelAnimationFrame(rafId); rafId = null; animating = false; } draw(performance.now()); return; }
+    if(!animating){ animating = true; rafId = requestAnimationFrame(frame); }
+  }
+
+  // ---- interaction ----
+  var dragging = false;
+  function setFromClientX(clientX){
+    var rect = canvas.getBoundingClientRect();
+    var padL = 14, padR = 14, x0 = padL, x1 = rect.width - padR;
+    var f = (clientX - rect.left - x0) / (x1 - x0);
+    idleFrac = Math.max(0, Math.min(1, f));
+    if(reduced) draw(performance.now());
+  }
+  canvas.addEventListener('pointerdown', function(e){ dragging = true; canvas.setPointerCapture(e.pointerId); setFromClientX(e.clientX); e.preventDefault(); });
+  canvas.addEventListener('pointermove', function(e){ if(dragging) setFromClientX(e.clientX); });
+  canvas.addEventListener('pointerup', function(e){ dragging = false; try{ canvas.releasePointerCapture(e.pointerId); }catch(x){} });
+  canvas.addEventListener('pointercancel', function(){ dragging = false; });
+  canvas.addEventListener('keydown', function(e){
+    var step = 0.02;
+    if(e.key === 'ArrowLeft' || e.key === 'ArrowDown'){ idleFrac = Math.max(0, idleFrac - step); if(reduced) draw(performance.now()); e.preventDefault(); }
+    else if(e.key === 'ArrowRight' || e.key === 'ArrowUp'){ idleFrac = Math.min(1, idleFrac + step); if(reduced) draw(performance.now()); e.preventDefault(); }
+    else if(e.key === 'Home'){ idleFrac = 0; if(reduced) draw(performance.now()); e.preventDefault(); }
+    else if(e.key === 'End'){ idleFrac = 1; if(reduced) draw(performance.now()); e.preventDefault(); }
+  });
+
+  // TTL segmented control
+  var segBtns = root.querySelectorAll('.tsc-seg-btn');
+  segBtns.forEach(function(b){
+    b.addEventListener('click', function(){
+      ttlMin = parseInt(b.getAttribute('data-ttl'), 10);
+      segBtns.forEach(function(o){
+        var on = o === b;
+        o.classList.toggle('is-on', on);
+        o.setAttribute('aria-checked', on ? 'true' : 'false');
+      });
+      if(reduced) draw(performance.now());
+    });
+  });
+  root.querySelector('#tsc-ping').addEventListener('change', function(e){ ping = e.target.checked; if(reduced) draw(performance.now()); });
+  root.querySelector('#tsc-hook').addEventListener('change', function(e){ hook = e.target.checked; if(reduced) draw(performance.now()); });
+
+  // ---- boot ----
+  readColors();
+  if(window.ResizeObserver){ new ResizeObserver(function(){ resize(); }).observe(canvas); }
+  else { window.addEventListener('resize', resize); }
+  if(window.matchMedia){
+    var mq = window.matchMedia('(prefers-color-scheme: dark)');
+    (mq.addEventListener ? mq.addEventListener.bind(mq,'change') : mq.addListener.bind(mq))(function(){ readColors(); if(reduced) draw(performance.now()); });
+  }
+  resize();
+  render();
+})();</script>
+
+<p>This gives a rule of thumb for when keeping a cache warm is worth it. You must ping once per TTL to hold the prefix, and each ping costs 0.1x. Break-even, in idle hours, is roughly (write multiplier x TTL minutes) / 6: about 20 hours for the 1-hour cache, about 1 hour for the 5-minute cache. Past that idle threshold, let it die; below it, a cheap periodic read beats paying the rebuild.</p>
+
+<h2>Main sessions and subagents are built differently</h2>
+
+<p>Now the next layer, and it is a fact about how the two request paths are constructed rather than anything dramatic. When your main session sends a request, every breakpoint carries <code>ttl=1h</code>. When a subagent sends a request, the breakpoints carry <code>ttl=5m(default)</code>. Claude Code omits the TTL field on subagent breakpoints, so they fall back to the API's 5-minute default. Your main session asks for the long cache; your subagents get the short one.</p>
+
+<p>I confirmed this two independent ways, and it is worth keeping them separate because they prove different things. First, the wire itself: in the captured proxy log, all three subagent breakpoints show <code>ttl=5m(default)</code> while the main session shows <code>ttl=1h</code> <sup class="cite"><a href="#ref-17">17</a></sup>. Second, the write volume at scale: a script over months of local usage logs shows main sessions wrote 1h=231,894,168 tokens (100% of main writes) and subagents wrote 5m=229,841,359 tokens (100% of subagent writes) <sup class="cite"><a href="#ref-17">17</a></sup>. Across two machines the split held: main sessions 100% on 1-hour, subagents 100% on 5-minute.</p>
+
+<section class="fig" id="fig-subagent-fanout">
+  <div class="sf-head">
+    <h3 class="sf-title">Subagent fan-out</h3>
+    <p class="sf-sub">Spawn N subagents and watch what each one writes against what it reads from cache. The tax is set by whether the task prompt bytes are identical, not by what the task does.</p>
+  </div>
+
+  <div class="sf-controls">
+    <label class="sf-nlabel">Subagents spawned
+      <span class="sf-nval" id="sf-nval">8</span>
+      <input class="sf-range" id="sf-n" type="range" min="1" max="40" value="8" step="1" aria-label="number of subagents">
+    </label>
+    <div class="sf-modes" role="group" aria-label="prompt mode">
+      <button type="button" data-mode="identical" class="sf-mode on">identical prompt</button>
+      <button type="button" data-mode="oneword" class="sf-mode">one word different</button>
+      <button type="button" data-mode="tasksmd" class="sf-mode">tasks.md constant</button>
+    </div>
+  </div>
+
+  <div class="sf-canvas-wrap">
+    <canvas class="sf-cv" id="sf-cv"></canvas>
+  </div>
+
+  <div class="sf-legend" aria-hidden="true">
+    <span class="sf-lg"><span class="sf-sw sf-sw-rw"></span>rewritten (write, 1.25x)</span>
+    <span class="sf-lg"><span class="sf-sw sf-sw-ca"></span>cached (read, 0.1x)</span>
+    <span class="sf-lg"><span class="sf-sw sf-sw-hub"></span>main session</span>
+  </div>
+
+  <div class="sf-readout">
+    <div class="sf-tile">
+      <div class="sf-k">write tokens</div>
+      <div class="sf-v" id="sf-write">0</div>
+    </div>
+    <div class="sf-tile">
+      <div class="sf-k">read tokens</div>
+      <div class="sf-v" id="sf-read">0</div>
+    </div>
+    <div class="sf-tile">
+      <div class="sf-k">cost, Opus 5m tier</div>
+      <div class="sf-v" id="sf-cost">$0</div>
+    </div>
+    <div class="sf-tile sf-tile-hot">
+      <div class="sf-k">you could have saved</div>
+      <div class="sf-v" id="sf-save">0%</div>
+    </div>
+  </div>
+
+  <p class="sf-note" id="sf-note"></p>
+  <p class="sf-hover" id="sf-hover">Hover or tap a spawn to inspect its write vs read.</p>
+</section>
+
+<style>
+  #fig-subagent-fanout{
+    --bg:#faf9f7; --ink:#1c1b1a; --ink-soft:#6b6864; --line:#e5e2dc;
+    --accent:#2f6f4f;
+    --block-tools:#8aa1b1; --block-system:#b6a68a; --block-catalog:#c0857e; --block-msg:#9aa0a6;
+    --cached:#5b8c6e; --rewrite:#b4726a;
+    --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --maxw:680px;
+
+    font-family:var(--sans);
+    color:var(--ink);
+    background:var(--bg);
+    max-width:var(--maxw);
+    margin:0 auto;
+    padding:18px;
+    box-sizing:border-box;
+    border:1px solid var(--line);
+    border-radius:12px;
+    line-height:1.5;
+  }
+  @media (prefers-color-scheme:dark){
+    #fig-subagent-fanout{--bg:#17161a;--ink:#ececec;--ink-soft:#9a9792;--line:#2b2a2e;}
+  }
+  #fig-subagent-fanout *{box-sizing:border-box;}
+  #fig-subagent-fanout .sf-head{margin-bottom:14px;}
+  #fig-subagent-fanout .sf-title{font-size:1.05rem;margin:0 0 4px;font-weight:650;}
+  #fig-subagent-fanout .sf-sub{font-size:.85rem;color:var(--ink-soft);margin:0;}
+
+  #fig-subagent-fanout .sf-controls{
+    display:flex;flex-wrap:wrap;gap:14px 18px;align-items:flex-end;
+    margin-bottom:14px;
+  }
+  #fig-subagent-fanout .sf-nlabel{
+    display:flex;flex-direction:column;gap:6px;
+    font-size:.75rem;color:var(--ink-soft);font-weight:600;
+    text-transform:uppercase;letter-spacing:.04em;
+    min-width:180px;flex:1 1 180px;
+  }
+  #fig-subagent-fanout .sf-nval{
+    font-family:var(--mono);font-size:1rem;color:var(--ink);
+    font-weight:700;letter-spacing:0;text-transform:none;
+  }
+  #fig-subagent-fanout .sf-range{
+    width:100%;accent-color:var(--accent);margin:0;cursor:pointer;
+  }
+  #fig-subagent-fanout .sf-modes{
+    display:flex;flex-wrap:wrap;gap:6px;
+  }
+  #fig-subagent-fanout .sf-mode{
+    font-family:var(--sans);font-size:.76rem;
+    padding:6px 10px;border:1px solid var(--line);
+    background:transparent;color:var(--ink-soft);
+    border-radius:7px;cursor:pointer;transition:.12s;
+  }
+  #fig-subagent-fanout .sf-mode:hover{color:var(--ink);border-color:var(--ink-soft);}
+  #fig-subagent-fanout .sf-mode.on{
+    background:var(--accent);color:#fff;border-color:var(--accent);font-weight:600;
+  }
+
+  #fig-subagent-fanout .sf-canvas-wrap{
+    width:100%;border:1px solid var(--line);border-radius:8px;
+    overflow:hidden;background:transparent;
+  }
+  #fig-subagent-fanout .sf-cv{display:block;width:100%;height:auto;}
+
+  #fig-subagent-fanout .sf-legend{
+    display:flex;flex-wrap:wrap;gap:8px 16px;
+    font-size:.72rem;color:var(--ink-soft);margin:10px 2px 0;
+  }
+  #fig-subagent-fanout .sf-lg{display:inline-flex;align-items:center;gap:6px;}
+  #fig-subagent-fanout .sf-sw{width:11px;height:11px;border-radius:3px;display:inline-block;flex:0 0 auto;}
+  #fig-subagent-fanout .sf-sw-rw{background:var(--rewrite);}
+  #fig-subagent-fanout .sf-sw-ca{background:var(--cached);}
+  #fig-subagent-fanout .sf-sw-hub{background:var(--block-msg);}
+
+  #fig-subagent-fanout .sf-readout{
+    display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));
+    gap:8px;margin-top:14px;
+  }
+  #fig-subagent-fanout .sf-tile{
+    border:1px solid var(--line);border-radius:8px;padding:9px 11px;
+    background:transparent;
+  }
+  #fig-subagent-fanout .sf-tile-hot{border-color:var(--rewrite);}
+  #fig-subagent-fanout .sf-k{
+    font-size:.66rem;color:var(--ink-soft);text-transform:uppercase;
+    letter-spacing:.04em;font-weight:600;margin-bottom:4px;
+  }
+  #fig-subagent-fanout .sf-v{
+    font-family:var(--mono);font-size:1.02rem;font-weight:700;color:var(--ink);
+  }
+  #fig-subagent-fanout .sf-tile-hot .sf-v{color:var(--rewrite);}
+
+  #fig-subagent-fanout .sf-note{
+    font-size:.82rem;color:var(--ink-soft);margin:14px 2px 0;
+    border-left:2px solid var(--accent);padding-left:10px;
+  }
+  #fig-subagent-fanout .sf-hover{
+    font-size:.74rem;color:var(--ink-soft);margin:8px 2px 0;
+    font-family:var(--mono);min-height:1.1em;
+  }
+</style>
+
+<script>(function(){
+  "use strict";
+  var root = document.getElementById("fig-subagent-fanout");
+  if(!root) return;
+  var cv = root.querySelector("#sf-cv");
+  var ctx = cv.getContext("2d");
+
+  // ---- cost model (pinned to rubric Section D) ----
+  var MULT = { input:1, read:0.1, write5m:1.25, write1h:2, output:5 };
+  // Opus $/M = input*5
+  var USD = { read: 5*MULT.read, write5m: 5*MULT.write5m, write1h: 5*MULT.write1h }; // 0.50 / 6.25 / 10
+
+  // per-spawn token ledger, i is zero-based spawn index
+  function perSpawn(mode, i){
+    if(i === 0) return { write:26237, read:0 };            // cold: full base write
+    if(mode === "oneword") return { write:14623, read:11602 }; // one-word tail diff
+    return { write:0, read:26237 };                         // identical & tasks.md: fully cached
+  }
+  function totals(mode, n){
+    var w=0, r=0;
+    for(var i=0;i<n;i++){ var s=perSpawn(mode,i); w+=s.write; r+=s.read; }
+    return { write:w, read:r };
+  }
+  function dollars(w, r){ return (w*USD.write5m + r*USD.read)/1e6; }
+  function savingsPct(mode, n){
+    var cur = dollars(totals(mode,n).write, totals(mode,n).read);
+    var best = dollars(totals("identical",n).write, totals("identical",n).read);
+    if(cur <= 0) return 0;
+    return (cur - best) / cur * 100;
+  }
+
+  // ---- inline cost-math self-test (gated, never breaks render) ----
+  try {
+    if (typeof console !== "undefined" && console.assert) {
+      console.assert(MULT.read===0.1 && MULT.write5m===1.25 && MULT.write1h===2, "SF: multipliers");
+      console.assert(MULT.write1h/MULT.read===20, "SF: 20x rebuild penalty");
+      console.assert(MULT.write5m/MULT.read===12.5, "SF: 12.5x 5m penalty");
+      console.assert(USD.read===0.5 && USD.write5m===6.25 && USD.write1h===10, "SF: Opus $/M");
+      var c0=perSpawn("identical",0), c1=perSpawn("identical",1), cw=perSpawn("oneword",1);
+      console.assert(c0.write===26237 && c0.read===0, "SF: cold identical=26237 write");
+      console.assert(c1.write===0 && c1.read===26237, "SF: identical repeat=0 write / 26237 read");
+      console.assert(cw.write===14623 && cw.read===11602 && (cw.write+cw.read)===26225, "SF: one-word 14623/11602");
+    }
+  } catch(e){}
+
+  // ---- color helpers ----
+  function cvar(name){ return getComputedStyle(root).getPropertyValue(name).trim(); }
+  var COL = {};
+  function refreshColors(){
+    COL.rewrite = cvar("--rewrite") || "#b4726a";
+    COL.cached  = cvar("--cached")  || "#5b8c6e";
+    COL.hub     = cvar("--block-msg") || "#9aa0a6";
+    COL.accent  = cvar("--accent") || "#2f6f4f";
+    COL.line    = cvar("--line") || "#e5e2dc";
+    COL.ink     = cvar("--ink") || "#1c1b1a";
+    COL.bg      = cvar("--bg") || "#faf9f7";
+  }
+  refreshColors();
+
+  // ---- state ----
+  var reduced = window.matchMedia && window.matchMedia("(prefers-reduced-motion:reduce)").matches;
+  var mode = "identical";
+  var N = 8;
+  var visible = 0;
+  var nodeRects = [];
+  var cssW = 320, cssH = 200;
+
+  // layout constants (css px)
+  var padL=10, padR=10, padT=12, padB=12;
+  var hubW=58, hubGap=22;
+  var cellW=18, cellGap=8, barH=46, rowGap=16;
+
+  function layout(){
+    cssW = Math.max(280, cv.clientWidth || root.clientWidth || 320);
+    var areaX = padL + hubW + hubGap;
+    var areaW = Math.max(cellW, cssW - areaX - padR);
+    var cols = Math.max(1, Math.floor((areaW + cellGap) / (cellW + cellGap)));
+    var rows = Math.max(1, Math.ceil(N / cols));
+    var gridH = rows*barH + (rows-1)*rowGap;
+    var hubH = 44;
+    cssH = Math.max(hubH, gridH) + padT + padB;
+
+    // compute node rects for all N (drawing gates on `visible`)
+    nodeRects = [];
+    for(var i=0;i<N;i++){
+      var col = i % cols, r = Math.floor(i / cols);
+      var x = areaX + col*(cellW+cellGap);
+      var y = padT + r*(barH+rowGap);
+      var s = perSpawn(mode, i);
+      nodeRects.push({ x:x, y:y, w:cellW, h:barH, i:i, write:s.write, read:s.read, col:col, row:r });
+    }
+    return { areaX:areaX, cols:cols, rows:rows };
+  }
+
+  function resizeCanvas(){
+    layout();
+    var dpr = Math.max(1, window.devicePixelRatio || 1);
+    cv.style.height = cssH + "px";
+    cv.width  = Math.round(cssW * dpr);
+    cv.height = Math.round(cssH * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  function roundRect(x,y,w,h,rd){
+    var r = Math.min(rd, w/2, h/2);
+    ctx.beginPath();
+    ctx.moveTo(x+r,y);
+    ctx.arcTo(x+w,y,x+w,y+h,r);
+    ctx.arcTo(x+w,y+h,x,y+h,r);
+    ctx.arcTo(x,y+h,x,y,r);
+    ctx.arcTo(x,y,x+w,y,r);
+    ctx.closePath();
+  }
+
+  function draw(pulse){
+    ctx.clearRect(0,0,cssW,cssH);
+    var hubCx = padL + hubW/2;
+    var hubCy = cssH/2;
+    var hubH = 44;
+    var hubX = padL, hubY = hubCy - hubH/2;
+
+    // connectors from hub to visible nodes
+    ctx.lineWidth = 1;
+    for(var i=0;i<visible;i++){
+      var nd = nodeRects[i];
+      if(!nd) continue;
+      ctx.strokeStyle = COL.accent;
+      ctx.globalAlpha = 0.16;
+      ctx.beginPath();
+      ctx.moveTo(padL + hubW, hubCy);
+      ctx.lineTo(nd.x + nd.w/2, nd.y);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    // hub
+    ctx.fillStyle = COL.hub;
+    roundRect(hubX, hubY, hubW, hubH, 8); ctx.fill();
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "600 12px " + cvar("--sans");
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText("main", hubX + hubW/2, hubCy);
+
+    // nodes: stacked bar, rewrite (top) over cached (bottom)
+    for(var j=0;j<visible;j++){
+      var n = nodeRects[j];
+      if(!n) continue;
+      var tot = n.write + n.read;
+      var wFrac = tot>0 ? n.write/tot : 0;
+      var wH = Math.round(n.h * wFrac);
+      var cH = n.h - wH;
+
+      var appear = 1;
+      if(pulse && j === visible-1){ appear = pulse; }
+
+      var yTop = n.y + (1-appear)*n.h*0.5;
+      var hCur = n.h * appear;
+      // redraw split proportionally within current height
+      var curW = Math.round(hCur * wFrac);
+      var curC = hCur - curW;
+
+      ctx.globalAlpha = appear;
+      // rewrite portion
+      if(curW > 0){
+        ctx.fillStyle = COL.rewrite;
+        roundRect(n.x, yTop, n.w, curW, 3); ctx.fill();
+      }
+      // cached portion
+      if(curC > 0){
+        ctx.fillStyle = COL.cached;
+        roundRect(n.x, yTop + curW, n.w, curC, 3); ctx.fill();
+      }
+      // outline
+      ctx.globalAlpha = appear;
+      ctx.strokeStyle = COL.line;
+      ctx.lineWidth = 1;
+      roundRect(n.x, yTop, n.w, hCur, 3); ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  function fmt(n){ return Math.round(n).toLocaleString("en-US"); }
+  function fmtUSD(v){
+    if(v >= 1) return "$" + v.toFixed(2);
+    return "$" + v.toFixed(4);
+  }
+
+  var elWrite = root.querySelector("#sf-write");
+  var elRead  = root.querySelector("#sf-read");
+  var elCost  = root.querySelector("#sf-cost");
+  var elSave  = root.querySelector("#sf-save");
+  var elNote  = root.querySelector("#sf-note");
+  var elNval  = root.querySelector("#sf-nval");
+
+  var NOTES = {
+    identical: "Byte-identical task prompts inside the 5-minute window. Only the first spawn pays the cold write of 26,237 tokens. Every spawn after it reads that same prefix at 0.1x. Zero rewrite, nothing wasted.",
+    oneword: "One word differs in each task prompt. The walking breakpoint sits past the task, so each spawn rewrites 14,623 tokens and only reads 11,602. That one word drags the identical stable block with it on every spawn.",
+    tasksmd: "Each task prompt is the same constant string that tells the subagent to read tasks.md. The file contents change per subagent but the prompt bytes do not, so every spawn after the first is fully cached. It behaves exactly like the identical case."
+  };
+
+  function updateReadout(){
+    var count = Math.max(visible, 0);
+    var t = totals(mode, count);
+    elWrite.textContent = fmt(t.write);
+    elRead.textContent  = fmt(t.read);
+    elCost.textContent  = fmtUSD(dollars(t.write, t.read));
+    elSave.textContent  = savingsPct(mode, count).toFixed(1) + "%";
+    elNote.textContent  = NOTES[mode];
+  }
+
+  // ---- animation: single rAF loop ----
+  var raf = null, startT = 0, running = false;
+  var PER = 85; // ms per spawn reveal
+
+  function stop(){ if(raf){ cancelAnimationFrame(raf); raf=null; } running=false; }
+
+  function loop(now){
+    var el = now - startT;
+    var target = Math.min(N, Math.floor(el / PER) + 1);
+    var pulse = 1;
+    if(target > visible){ visible = target; }
+    // pulse the newest node in over one PER window
+    var into = (el % PER) / PER;
+    pulse = 0.35 + 0.65 * Math.min(1, into*1.6);
+    draw(visible < N ? pulse : 1);
+    updateReadout();
+    if(visible < N){
+      raf = requestAnimationFrame(loop);
+    } else {
+      draw(1); updateReadout(); stop();
+    }
+  }
+
+  function restart(){
+    stop();
+    if(reduced){
+      visible = N; draw(1); updateReadout(); return;
+    }
+    visible = 0;
+    running = true;
+    startT = performance.now();
+    raf = requestAnimationFrame(loop);
+  }
+
+  // ---- interactions ----
+  var rangeEl = root.querySelector("#sf-n");
+  rangeEl.addEventListener("input", function(){
+    N = parseInt(rangeEl.value, 10) || 1;
+    elNval.textContent = N;
+    resizeCanvas();
+    restart();
+  });
+
+  root.querySelectorAll(".sf-mode").forEach(function(btn){
+    btn.addEventListener("click", function(){
+      root.querySelectorAll(".sf-mode").forEach(function(b){ b.classList.remove("on"); });
+      btn.classList.add("on");
+      mode = btn.getAttribute("data-mode");
+      resizeCanvas();
+      restart();
+    });
+  });
+
+  // hover inspect
+  var elHover = root.querySelector("#sf-hover");
+  function inspect(clientX, clientY){
+    var rect = cv.getBoundingClientRect();
+    var px = clientX - rect.left;
+    var py = clientY - rect.top;
+    for(var i=0;i<Math.min(visible,nodeRects.length);i++){
+      var n = nodeRects[i];
+      if(px>=n.x-3 && px<=n.x+n.w+3 && py>=n.y-3 && py<=n.y+n.h+3){
+        var tier = i===0 ? "cold base" : (mode==="oneword" ? "partial rewrite" : "fully cached");
+        elHover.textContent = "spawn #" + (i+1) + ": write " + fmt(n.write) + " tok, read " + fmt(n.read) + " tok (" + tier + ")";
+        return;
+      }
+    }
+    elHover.textContent = "Hover or tap a spawn to inspect its write vs read.";
+  }
+  cv.addEventListener("mousemove", function(e){ inspect(e.clientX, e.clientY); });
+  cv.addEventListener("mouseleave", function(){ elHover.textContent = "Hover or tap a spawn to inspect its write vs read."; });
+  cv.addEventListener("click", function(e){ inspect(e.clientX, e.clientY); });
+  cv.addEventListener("touchstart", function(e){
+    if(e.touches && e.touches[0]){ inspect(e.touches[0].clientX, e.touches[0].clientY); }
+  }, {passive:true});
+
+  // resize handling
+  var ro;
+  if(window.ResizeObserver){
+    ro = new ResizeObserver(function(){
+      refreshColors();
+      resizeCanvas();
+      if(reduced || !running){ draw(1); updateReadout(); }
+    });
+    ro.observe(cv);
+  } else {
+    window.addEventListener("resize", function(){ refreshColors(); resizeCanvas(); draw(1); updateReadout(); });
+  }
+
+  // react to theme changes for colors
+  if(window.matchMedia){
+    var mq = window.matchMedia("(prefers-color-scheme:dark)");
+    var onTheme = function(){ refreshColors(); draw(visible<N?1:1); };
+    if(mq.addEventListener) mq.addEventListener("change", onTheme);
+    else if(mq.addListener) mq.addListener(onTheme);
+  }
+
+  // init
+  N = parseInt(rangeEl.value,10) || 8;
+  elNval.textContent = N;
+  resizeCanvas();
+  restart();
+})();</script>
+
+<p>One honest nuance. A subagent that spins up while riding an already-warm 1-hour prefix shared from its parent can write its small addition at the 1-hour tier. In one capture a subagent read 39,303 tokens and wrote only 25, and those 25 were written at 1h because they extended the parent's warm 1h prefix. That is a real edge case, not the rule. The single 1-hour subagent bucket in the aggregate (26,315 tokens) was a deliberate test run with the 1-hour flag forced on <sup class="cite"><a href="#ref-17">17</a></sup>. The default subagent request is 5-minute, and nearly all subagent write volume is 5-minute.</p>
+
+<h2>Where it costs you</h2>
+
+<p>With the mechanics in hand, the problems are natural consequences, not surprises. Each one below is a symptom, a reason, and a citation you can open.</p>
+
+<p><strong>The final breakpoint sits behind the thing that changes.</strong> This is the root cause, and it is about placement, not content. In a captured subagent request, the layout ran in this order <sup class="cite"><a href="#ref-18">18</a></sup>:</p>
+
+<ol class="steps"><li><code>tools</code> (stable)</li><li><code>system</code> prompt, with breakpoints</li><li><code>msg[0]</code>, the variable task prompt (about 1,250 tokens, ending in whatever word changed)</li><li><code>msg[1]</code>, a stable block of about 9,500 tokens, the notice listing tools loaded on demand, with the final breakpoint at its very end</li></ol>
+
+<p>The problem is step 4 sitting behind step 3. There is no breakpoint between the variable task and the stable block behind it. So when one word in the task changes, the prefix invalidates from that word all the way to the end of <code>msg[1]</code>, dragging the identical 9,500-token block into the rewrite along with it <sup class="cite"><a href="#ref-7">7</a></sup>. The stable content is stranded behind the one thing that changes every spawn.</p>
+
+<p><strong>Subagents do not share a base with each other, so each spawn re-pays it.</strong> There is no cross-subagent prefix sharing. Every subagent writes its own base from cold. The base is the stable front of tools, system, and the notice block that has to be written from cold when nothing is cached <sup class="cite"><a href="#ref-10">10</a></sup>. Across 40 real subagents, 25 of 40 started cold, the average base write was 34,051 tokens per spawn, and first turns ran 86% write to 14% read <sup class="cite"><a href="#ref-2">2</a></sup><sup class="cite"><a href="#ref-3">3</a></sup>. Ten agents can turn into ten full base writes, which is the shape behind the "$400 for 10 agents" report <sup class="cite"><a href="#ref-4">4</a></sup>.</p>
+
+<p><strong>A one-word difference rewrites about 14.6k tokens.</strong> Because the breakpoint is upstream of the task, two subagent prompts that differ by a single word do not share their tail. I sent two identical-except-one-word prompts (HEY vs HELLO): each wrote 14,623 and 14,624 tokens and read 11,602, for about 26,225 total each <sup class="cite"><a href="#ref-7">7</a></sup>. Byte-identical prompts, by contrast, wrote 26,237 the first time and 0 the second time, reading the full 26,237 back. Identical costs nothing on the second spawn; one word costs you 14.6k.</p>
+
+<p><strong>Subagents on the 5-minute cache evaporate mid-fan-out.</strong> A fan-out where one agent takes six minutes leaves the others' prefixes expired before they are reused, forcing rebuilds a 1-hour TTL would have survived <sup class="cite"><a href="#ref-3">3</a></sup><sup class="cite"><a href="#ref-8">8</a></sup>.</p>
+
+<p><strong>A dynamic line in a SessionStart hook poisons the cross-session catalog.</strong> This one has no issue filed against it directly, so I will be specific. If a SessionStart hook injects anything that changes between sessions (a UUID, a timestamp, a checkpoint path), it changes an early prefix, and the large stable catalog behind it can no longer be reused across sessions. In two main sessions where I typed only "hey," each read 21,478 tokens but each still wrote about 24,300, and the driver was a dynamic hook line, not the word I typed. This is the same class of problem as dynamic hook and injected content invalidating the prefix <sup class="cite"><a href="#ref-11">11</a></sup><sup class="cite"><a href="#ref-12">12</a></sup>.</p>
+
+<p><strong>The cch nonce is the thing people wrongly blame.</strong> The first system block carries a billing header with a <code>cch=&amp;lt;hash&amp;gt;</code> value that changes on every single request. It is tempting to blame it for cache misses. On native Anthropic it is a red herring. It has no cache_control, it sits above all the breakpoints, and main-session turns share huge growing prefixes with tiny writes even though <code>cch</code> changes every turn, which is impossible if it keyed the cache <sup class="cite"><a href="#ref-17">17</a></sup>. It only hurts third-party routers that fold the header into their cache key, and the fix there is to set <code>CLAUDE_CODE_ATTRIBUTION_HEADER=0</code> <sup class="cite"><a href="#ref-5">5</a></sup><sup class="cite"><a href="#ref-6">6</a></sup>. The real culprit is breakpoint placement, not the nonce.</p>
+
+<p><strong>Idle resumes, auto-compaction, and task nudges rewrite history.</strong> Coming back after the TTL expires rebuilds the base <sup class="cite"><a href="#ref-13">13</a></sup>. Auto-compaction re-creates a stale large prefix <sup class="cite"><a href="#ref-13">13</a></sup>. A task-reminder nudge injected into the history rewrites the cached conversation from the injection point down <sup class="cite"><a href="#ref-14">14</a></sup>. Each of these is an early change with a long tail behind it.</p>
+
+<p><strong>Parallel tool calls and Agent Teams have their own rewrite modes.</strong> Parallel tool calls can collapse the cache read <sup class="cite"><a href="#ref-16">16</a></sup>, and Agent Teams delivery has been reported as a full rewrite <sup class="cite"><a href="#ref-15">15</a></sup>.</p>
+
+<h2>What to do about it</h2>
+
+<p>None of this requires patching Claude Code. Most of the recovery comes from a few habits and one or two settings.</p>
+
+<p><strong>Keep the main session warm instead of letting it die and rebuild.</strong> A periodic read (a cheap ping roughly every 50 minutes) holds the 1-hour prefix warm. Given the 20x rebuild-versus-read gap, this pays off up to about 16 hours of idle before the pings cost more than one rebuild. On the machine I measured, idle rebuilds were the single largest waste, and keeping warm recovers most of the roughly 13% of weekly quota that idle waste was costing.</p>
+
+<p><strong>Trim MCP servers you do not use.</strong> Tool definitions were about 16k tokens of base in every single session and every single subagent. That base is written cold on every cold start. Cutting unused MCP tools is the highest-leverage change because it shrinks a cost that is paid universally, on the main session and on every spawn.</p>
+
+<p><strong>Do not delegate trivial edits to a subagent.</strong> Every subagent spawn writes about a 34k base from cold. For a one-line edit you can do inline, that base is pure overhead. On the measured machine, a "delegate everything" habit ran 557 subagents and attributed roughly 1% of monthly quota, about $130 per month at API 5-minute rates, to spawn bases alone. That $130 is the delegate-rule attribution, not total spend.</p>
+
+<p><strong>When you do fan out subagents, make their prompts byte-identical inside the 5-minute window.</strong> Identical prompts write 0 on every spawn after the first; a one-word difference writes 14.6k each. Group subagents by type and hand them the same prompt. If the per-item detail has to vary, put it in a file the prompt points to (the prompt stays byte-identical while the file contents change), and the prefix stays fully cached.</p>
+
+<p><strong>Consider <code>ENABLE_PROMPT_CACHING_1H=1</code>, with a real caveat.</strong> This flips subagent writes to the 1-hour tier (measured: 1h=26,315, 5m=0 on the test run). It is a win only when you actually reuse the longer cache enough to cover the higher write price. A 1-hour write is 2x versus 1.25x for 5 minutes, so it pays off only when your rebuild-to-base ratio is above about 0.40. On one machine the ratio was 24.0M over 6.7M, or 0.28, a loss. On another it was 7.9M over 5.9M, or 0.74, a win. Measure before you flip it.</p>
+
+<p><strong>Stabilize your SessionStart hooks.</strong> Strip anything that changes per session (UUIDs, timestamps, checkpoint paths) out of what the hook injects early. On the measured setup this recovers up to about 24k tokens of cross-session write on every new session, because the large catalog behind the hook line becomes reusable again.</p>
+
+<h2>Measure your own with cache-diagnose</h2>
+
+<p>The numbers above are from my machine and one heavy config. The mechanisms generalize; the exact figures will not. So the useful move is to point the same analysis at your own <code>~/.claude</code> and see your split.</p>
+
+<p><code>cache_diagnose.py</code> reads your local usage logs and prints your main-versus-subagent TTL split, the specific issues it finds, and a bottom line showing how many tokens and how much API-equivalent value is recoverable. It prints only counts and totals, no project names, paths, or usernames. Here is a trimmed run from one real machine. The dollar figures are API-equivalent list prices, what these tokens would cost on the API, not a subscription bill.</p>
+
+<pre class="sample"><code>CACHE DIAGNOSIS  -  last 30 days
+sessions=101  subagents=642
+
+USAGE (last 30 days, API-equivalent):
+  input             3,108,417 tok
+  output           35,388,834 tok
+  cache-read   18,211,604,437 tok
+  cache-write     463,208,970 tok   (1h=232,302,372 5m=230,906,598)
+  TOTAL COST  ~$10,346  (API list price, not your subscription bill)
+
+TTL SPLIT  (cache-write tokens)
+  MAIN sessions : 1h  232,276,057 (100%)   5m            0 (  0%)
+  SUBAGENTS     : 1h       26,315 (  0%)   5m  230,906,598 (100%)
+
+ISSUES FOUND
+  1. Subagents on the short 5m cache      ~$156 API-equiv
+  2. Idle rebuilds (came back after &gt;1h)  ~$808 API-equiv
+  3. Delegate tax (repeated cold bases)   ~$219 API-equiv
+  4. Oversized tool base (MCP / catalogs) ~$57  API-equiv
+
+BOTTOM LINE  (API-equivalent, list price, not your subscription bill)
+  Total this month (API-equivalent) : ~$10,346
+  Recoverable (API-equivalent)      : ~$1,184  (11% of cost; de-overlapped, below the issue sum)
+  Biggest lever                     : Idle rebuilds (~$808 alone)</code></pre>
+
+<p>This is example output from one real machine, not a universal result. Your split will differ. You can open the <a href="https://gist.github.com/eligrumman/fad23b0f767905ce88e80875ddff1d9b#file-cache-diagnose-sample-txt" target="_blank" rel="noopener">full sample output</a> and the <a href="https://gist.github.com/eligrumman/fad23b0f767905ce88e80875ddff1d9b#file-cache_diagnose-py" target="_blank" rel="noopener">tool itself</a> in a new tab. The companion gist <sup class="cite"><a href="#ref-1">1</a></sup> carries three scripts you can run on your own <code>~/.claude</code>: <code>cache_diagnose.py</code> for the report above, <code>ttl_1h_tradeoff.py</code> for the 1-hour win/loss math, and <code>estimate_savings.py</code> for the recovery estimate.</p>
+
+<p>One honesty note to close on. This was measured on Claude Code 2.1.226 talking directly to Anthropic, on one heavy config. The mechanisms are general and should hold for you; the absolute numbers will not. All quota and dollar percentages use a cost-equivalent proxy, the API list-price value of the tokens, not what you pay on a subscription.</p>
+
+<h2>References</h2>
+
+<p>Links open the raw test results and issue pages in a new tab.</p>
+
+<ol class="refs"><li class="ref" id="ref-1"><span class="ref-n">[1]</span> <span class="ref-label">Gist, the three analysis scripts to run on your own <code>~/.claude</code></span> <a href="https://gist.github.com/eligrumman/67323bc9216d6eb6bde87ac41c791d83" target="_blank" rel="noopener">https://gist.github.com/eligrumman/67323bc9216d6eb6bde87ac41c791d83</a></li><li class="ref" id="ref-2"><span class="ref-n">[2]</span> <span class="ref-label">Issue #63981, no cross-subagent prefix sharing / per-spawn base</span> <a href="https://github.com/anthropics/claude-code/issues/63981" target="_blank" rel="noopener">https://github.com/anthropics/claude-code/issues/63981</a></li><li class="ref" id="ref-3"><span class="ref-n">[3]</span> <span class="ref-label">Issue #84289, subagent cache TTL docs versus reality (5m vs 1h)</span> <a href="https://github.com/anthropics/claude-code/issues/84289" target="_blank" rel="noopener">https://github.com/anthropics/claude-code/issues/84289</a></li><li class="ref" id="ref-4"><span class="ref-n">[4]</span> <span class="ref-label">Issue #29966, subagents re-pay the base, the "$400 / 10 agents" report</span> <a href="https://github.com/anthropics/claude-code/issues/29966" target="_blank" rel="noopener">https://github.com/anthropics/claude-code/issues/29966</a></li><li class="ref" id="ref-5"><span class="ref-n">[5]</span> <span class="ref-label">Issue #68900, cch nonce breaks caching on third-party providers</span> <a href="https://github.com/anthropics/claude-code/issues/68900" target="_blank" rel="noopener">https://github.com/anthropics/claude-code/issues/68900</a></li><li class="ref" id="ref-6"><span class="ref-n">[6]</span> <span class="ref-label">Issue #40652, attribution-header nonce, <code>CLAUDE_CODE_ATTRIBUTION_HEADER=0</code></span> <a href="https://github.com/anthropics/claude-code/issues/40652" target="_blank" rel="noopener">https://github.com/anthropics/claude-code/issues/40652</a></li><li class="ref" id="ref-7"><span class="ref-n">[7]</span> <span class="ref-label">Issue #82739, final breakpoint upstream of the user message, tiny diffs rewrite</span> <a href="https://github.com/anthropics/claude-code/issues/82739" target="_blank" rel="noopener">https://github.com/anthropics/claude-code/issues/82739</a></li><li class="ref" id="ref-8"><span class="ref-n">[8]</span> <span class="ref-label">Issue #84253, 2.1.218+ may no longer request the 1h TTL</span> <a href="https://github.com/anthropics/claude-code/issues/84253" target="_blank" rel="noopener">https://github.com/anthropics/claude-code/issues/84253</a></li><li class="ref" id="ref-9"><span class="ref-n">[9]</span> <span class="ref-label">Issue #74075, 1h TTL behavior</span> <a href="https://github.com/anthropics/claude-code/issues/74075" target="_blank" rel="noopener">https://github.com/anthropics/claude-code/issues/74075</a></li><li class="ref" id="ref-10"><span class="ref-n">[10]</span> <span class="ref-label">Issue #58953, tool catalog uncached / breakpoint missing</span> <a href="https://github.com/anthropics/claude-code/issues/58953" target="_blank" rel="noopener">https://github.com/anthropics/claude-code/issues/58953</a></li><li class="ref" id="ref-11"><span class="ref-n">[11]</span> <span class="ref-label">Issue #81077, dynamic hook / injected content invalidating the prefix</span> <a href="https://github.com/anthropics/claude-code/issues/81077" target="_blank" rel="noopener">https://github.com/anthropics/claude-code/issues/81077</a></li><li class="ref" id="ref-12"><span class="ref-n">[12]</span> <span class="ref-label">Issue #83913, PreToolUse/PostToolUse hooks breaking the cache</span> <a href="https://github.com/anthropics/claude-code/issues/83913" target="_blank" rel="noopener">https://github.com/anthropics/claude-code/issues/83913</a></li><li class="ref" id="ref-13"><span class="ref-n">[13]</span> <span class="ref-label">Issue #70459, auto-compaction re-creates a stale ~200k prefix</span> <a href="https://github.com/anthropics/claude-code/issues/70459" target="_blank" rel="noopener">https://github.com/anthropics/claude-code/issues/70459</a></li><li class="ref" id="ref-14"><span class="ref-n">[14]</span> <span class="ref-label">Issue #78660, task_reminder nudge rewrites cached history</span> <a href="https://github.com/anthropics/claude-code/issues/78660" target="_blank" rel="noopener">https://github.com/anthropics/claude-code/issues/78660</a></li><li class="ref" id="ref-15"><span class="ref-n">[15]</span> <span class="ref-label">Issue #80604, Agent Teams delivery is a full rewrite</span> <a href="https://github.com/anthropics/claude-code/issues/80604" target="_blank" rel="noopener">https://github.com/anthropics/claude-code/issues/80604</a></li><li class="ref" id="ref-16"><span class="ref-n">[16]</span> <span class="ref-label">Issue #63930, parallel tool calls collapse cache_read</span> <a href="https://github.com/anthropics/claude-code/issues/63930" target="_blank" rel="noopener">https://github.com/anthropics/claude-code/issues/63930</a></li><li class="ref" id="ref-17"><span class="ref-n">[17]</span> <span class="ref-label">Raw evidence gist, request-side <code>ttl=1h</code> vs <code>ttl=5m(default)</code> proof and the write-tier aggregate</span> <a href="https://gist.github.com/eligrumman/fad23b0f767905ce88e80875ddff1d9b#file-ttl-split-aggregate-txt" target="_blank" rel="noopener">https://gist.github.com/eligrumman/fad23b0f767905ce88e80875ddff1d9b#file-ttl-split-aggregate-txt</a></li><li class="ref" id="ref-18"><span class="ref-n">[18]</span> <span class="ref-label">Same gist, subagent request layout (tail breakpoint, task before the stable block)</span> <a href="https://gist.github.com/eligrumman/fad23b0f767905ce88e80875ddff1d9b#file-subagent-request-segments-md" target="_blank" rel="noopener">https://gist.github.com/eligrumman/fad23b0f767905ce88e80875ddff1d9b#file-subagent-request-segments-md</a></li></ol>
+</main>
+</body>
+</html>
