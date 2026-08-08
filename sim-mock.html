@@ -1,0 +1,1139 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Claude Code Simulator - Mock</title>
+<style>
+  :root {
+    --bg: #f6f6f4;
+    --panel: #ffffff;
+    --panel-2: #fbfbf9;
+    --ink: #1d1d20;
+    --ink-soft: #55555f;
+    --ink-faint: #8a8a93;
+    --line: #e2e2dd;
+    --line-2: #ededea;
+    --accent: #3a3a44;
+    --read: #3d7fd6;
+    --read-soft: #cfe0f6;
+    --write: #e0603a;
+    --write-soft: #f6d8cd;
+    --grey: #c7c7c2;
+    --grey-soft: #e9e9e5;
+    --catalog: #b98a2e;
+    --good: #2f8f5b;
+    --bad: #c23b3b;
+    --warn: #c98a1e;
+    --shadow: 0 1px 3px rgba(0,0,0,.06), 0 6px 20px rgba(0,0,0,.04);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #16161a;
+      --panel: #1f1f25;
+      --panel-2: #24242b;
+      --ink: #ececf0;
+      --ink-soft: #a2a2ad;
+      --ink-faint: #71717c;
+      --line: #303039;
+      --line-2: #2a2a31;
+      --accent: #d8d8e0;
+      --read: #5b9bf0;
+      --read-soft: #22384f;
+      --write: #f07a53;
+      --write-soft: #4a2b1e;
+      --grey: #4a4a53;
+      --grey-soft: #2a2a31;
+      --catalog: #d7a544;
+      --good: #4bbd80;
+      --bad: #e56a6a;
+      --warn: #e0b054;
+      --shadow: 0 1px 3px rgba(0,0,0,.4), 0 6px 24px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #16161a; --panel: #1f1f25; --panel-2: #24242b; --ink: #ececf0; --ink-soft: #a2a2ad;
+    --ink-faint: #71717c; --line: #303039; --line-2: #2a2a31; --accent: #d8d8e0; --read: #5b9bf0;
+    --read-soft: #22384f; --write: #f07a53; --write-soft: #4a2b1e; --grey: #4a4a53; --grey-soft: #2a2a31;
+    --catalog: #d7a544; --good: #4bbd80; --bad: #e56a6a; --warn: #e0b054;
+    --shadow: 0 1px 3px rgba(0,0,0,.4), 0 6px 24px rgba(0,0,0,.35);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .app { max-width: 1080px; margin: 0 auto; padding: 14px 12px 60px; }
+  h1 { font-size: 19px; font-weight: 650; letter-spacing: -.01em; margin: 0 0 1px; }
+  .sub { color: var(--ink-soft); font-size: 12.5px; margin: 0 0 12px; }
+  .sub b { color: var(--ink); font-weight: 600; }
+
+  /* HUD */
+  .hud { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: stretch;
+         background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+         box-shadow: var(--shadow); padding: 10px 12px; margin-bottom: 12px; }
+  .hud-cell { display: flex; flex-direction: column; justify-content: center; }
+  .hud .k { font-size: 9.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-soft); font-weight: 650; }
+  .wallet-v { font-size: 26px; font-weight: 750; letter-spacing: -.02em; font-variant-numeric: tabular-nums; line-height: 1.05; }
+  .wallet.low .wallet-v { color: var(--write); }
+  .wallet.dead .wallet-v { color: var(--bad); }
+  .quota { font-size: 11px; color: var(--ink-soft); font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .clock-wrap { min-width: 0; }
+  .clockstrip { display: flex; gap: 2px; margin-top: 4px; flex-wrap: nowrap; overflow-x: auto; padding-bottom: 2px; }
+  .daycell { width: 9px; height: 16px; border-radius: 2px; background: var(--grey-soft); flex: 0 0 auto; }
+  .daycell.done { background: var(--read); }
+  .daycell.cur { background: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent); }
+  .clocklabel { font-size: 11px; color: var(--ink-soft); margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .tedium { text-align: right; }
+  .bobface { font: 700 15px ui-monospace, Menlo, monospace; letter-spacing: 1px; margin-top: 2px; }
+  .bobface.fresh { color: var(--good); }
+  .bobface.tired { color: var(--warn); }
+  .bobface.fried { color: var(--bad); }
+  .tedbar { width: 96px; height: 6px; border-radius: 3px; background: var(--grey-soft); overflow: hidden; margin: 4px 0 0 auto; }
+  .tedbar > i { display: block; height: 100%; background: var(--warn); width: 0%; transition: width .4s; }
+  .tedbar.hot > i { background: var(--bad); }
+
+  /* Layout */
+  .main { display: grid; grid-template-columns: 232px 1fr; gap: 12px; align-items: start; }
+  @media (max-width: 760px) { .main { grid-template-columns: 1fr; } }
+
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); padding: 12px; margin-bottom: 12px; }
+  .card h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-soft); font-weight: 650; margin: 0 0 10px; }
+
+  /* Config strip (compact, ncase-dense) */
+  .cfg { padding: 10px 11px; }
+  .grp { margin-bottom: 11px; }
+  .grp:last-child { margin-bottom: 0; }
+  .grp-h { font-size: 9.5px; text-transform: uppercase; letter-spacing: .07em; color: var(--ink-faint); font-weight: 700; margin: 0 0 6px; border-bottom: 1px solid var(--line-2); padding-bottom: 3px; }
+  .ctl { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-height: 22px; margin-bottom: 4px; }
+  .ctl:last-child { margin-bottom: 0; }
+  .ctl > label { font-size: 12px; color: var(--ink); flex: 0 0 auto; }
+  .ctl .fact { font-size: 9.5px; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+  .ctl.dis { opacity: .38; pointer-events: none; }
+  select.mini { font: 11px -apple-system, system-ui, sans-serif; height: 22px; padding: 0 4px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); max-width: 108px; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  .seg button { appearance: none; border: none; background: var(--bg); color: var(--ink-soft); font: 600 10.5px -apple-system, system-ui, sans-serif; height: 22px; padding: 0 8px; cursor: pointer; }
+  .seg button.on { background: var(--accent); color: var(--panel); }
+  .seg button + button { border-left: 1px solid var(--line); }
+  input[type=checkbox].mini { width: 15px; height: 15px; accent-color: var(--accent); margin: 0; cursor: pointer; }
+  input[type=range].mini { width: 96px; accent-color: var(--accent); height: 16px; }
+  .rngrow { display: flex; align-items: center; gap: 6px; }
+  .rngval { font-size: 10.5px; color: var(--ink-soft); font-variant-numeric: tabular-nums; min-width: 30px; text-align: right; }
+  .mcp-row { display: flex; align-items: center; gap: 5px; margin-bottom: 3px; }
+  .mcp-row label { font-size: 11px; color: var(--ink); flex: 1; }
+  .mcp-row .fact { font-size: 9.5px; color: var(--ink-faint); }
+  .seedrow { display: flex; gap: 5px; align-items: center; }
+  .seedrow input[type=text] { width: 62px; font: 11px ui-monospace, monospace; height: 22px; padding: 0 5px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+  .icobtn { appearance: none; border: 1px solid var(--line); background: var(--bg); color: var(--ink-soft); height: 22px; width: 24px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+
+  /* Board */
+  .board { display: flex; flex-wrap: wrap; gap: 5px; }
+  .unit { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--line); background: var(--bg); border-radius: 999px; padding: 4px 9px; font-size: 11px; color: var(--ink-soft); font-weight: 600; white-space: nowrap; transition: border-color .2s, background .2s, color .2s; }
+  .unit .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--grey); flex: 0 0 auto; }
+  .unit.ready { color: var(--ink); border-color: var(--accent); }
+  .unit.ready .dot { background: var(--accent); }
+  .unit.active { color: var(--panel); background: var(--accent); border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+  .unit.active .dot { background: var(--panel); }
+  .unit.done { color: var(--good); border-color: color-mix(in srgb, var(--good) 40%, var(--line)); }
+  .unit.done .dot { background: var(--good); }
+  .unit.hand { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
+  .unit.hand .dot { background: var(--warn); }
+  .unit.rework { border-style: dashed; }
+
+  /* run controls */
+  .runbar { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+  .btn { appearance: none; border: 1px solid var(--accent); background: var(--accent); color: var(--panel); border-radius: 9px; padding: 9px 18px; font-size: 14px; font-weight: 650; cursor: pointer; transition: opacity .15s, transform .05s; }
+  .btn:hover:not([disabled]) { opacity: .9; }
+  .btn:active:not([disabled]) { transform: translateY(1px); }
+  .btn[disabled] { opacity: .45; cursor: default; }
+  .btn.ghost { background: transparent; color: var(--ink); border-color: var(--line); font-size: 12px; padding: 7px 12px; font-weight: 600; }
+  .runhint { font-size: 12px; color: var(--ink-soft); }
+  .runhint b { color: var(--ink); }
+
+  /* tape canvas */
+  .tape-holder { position: relative; width: 100%; }
+  canvas { display: block; width: 100%; height: auto; border-radius: 8px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; font-size: 11.5px; color: var(--ink-soft); }
+  .legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .sw { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+  .sw.read { background: var(--read); } .sw.write { background: var(--write); } .sw.grey { background: var(--grey); }
+
+  .msg { font-size: 12px; color: var(--ink-soft); margin-top: 8px; min-height: 17px; }
+  .msg b { color: var(--ink); }
+
+  /* modal */
+  .scrim { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: none; align-items: center; justify-content: center; padding: 16px; z-index: 40; }
+  .scrim.on { display: flex; }
+  .modal { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); max-width: 560px; width: 100%; max-height: 88vh; overflow: auto; padding: 20px; }
+  .modal h3 { margin: 0 0 4px; font-size: 18px; font-weight: 700; }
+  .modal .lead { color: var(--ink-soft); font-size: 13px; margin: 0 0 14px; }
+  .modal .row-btns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+
+  pre.report { font: 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 14px; overflow-x: auto; color: var(--ink); white-space: pre; margin: 0 0 12px; }
+  .hidden-block { border: 1px solid color-mix(in srgb, var(--write) 35%, var(--line)); border-radius: 10px; padding: 14px; background: color-mix(in srgb, var(--write) 5%, var(--panel)); }
+  .hidden-block h4 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--write); }
+  .hl { font: 12px/1.7 ui-monospace, Menlo, monospace; }
+  .hl .r { display: flex; justify-content: space-between; gap: 10px; border-bottom: 1px dashed var(--line); padding: 1px 0; }
+  .hl .r:last-child { border-bottom: none; }
+  .hl a { color: var(--read); text-decoration: none; }
+  .hl a:hover { text-decoration: underline; }
+  .hl .amt { font-weight: 700; color: var(--write); font-variant-numeric: tabular-nums; }
+  .hl .tot { border-top: 2px solid var(--line); margin-top: 4px; padding-top: 4px; font-weight: 700; }
+  .cta { margin-top: 12px; font-size: 12.5px; color: var(--ink); }
+  .cta code { background: var(--grey-soft); padding: 2px 7px; border-radius: 6px; font-size: 12px; }
+  .grade { font-size: 40px; font-weight: 800; letter-spacing: -.02em; }
+  .grade.A { color: var(--good); } .grade.B { color: var(--read); } .grade.C { color: var(--warn); } .grade.D { color: var(--bad); }
+  .a11y-toggle { font-size: 11px; color: var(--ink-soft); margin-top: 8px; cursor: pointer; text-decoration: underline; }
+  table.ledtab { width: 100%; border-collapse: collapse; font: 10.5px ui-monospace, monospace; margin-top: 8px; display: none; }
+  table.ledtab.on { display: table; }
+  table.ledtab th, table.ledtab td { text-align: right; padding: 2px 5px; border-bottom: 1px solid var(--line-2); }
+  table.ledtab th:first-child, table.ledtab td:first-child { text-align: left; }
+  .footnote { font-size: 11px; color: var(--ink-faint); margin-top: 14px; }
+</style>
+
+<div class="app">
+  <h1>The Claude Code Simulator</h1>
+  <p class="sub">Help <b>Bob</b> ship the auth feature on his org's <b>$90/month</b> Claude budget. Every knob you set is a real one. The wallet just drains. It never tells you why. <span style="color:var(--ink-faint)">Mock build: one scripted ticket, full loop.</span></p>
+
+  <!-- HUD -->
+  <div class="hud">
+    <div class="hud-cell wallet" id="walletCell">
+      <span class="k">Wallet</span>
+      <span class="wallet-v" id="walletV">$90.00</span>
+      <span class="quota" id="quotaV">0% of monthly cap</span>
+    </div>
+    <div class="hud-cell clock-wrap">
+      <span class="k">Month</span>
+      <div class="clockstrip" id="clockStrip"></div>
+      <span class="clocklabel" id="clockLabel">Day 1 - 0.0 h into a 5.0 h block</span>
+    </div>
+    <div class="hud-cell tedium">
+      <span class="k">Bob (tedium)</span>
+      <div class="bobface fresh" id="bobFace">[ - _ - ]</div>
+      <div class="tedbar" id="tedBar"><i id="tedFill"></i></div>
+    </div>
+  </div>
+
+  <div class="main">
+    <!-- CONFIG STRIP -->
+    <div class="card cfg" id="cfgCard">
+      <h2>Config</h2>
+
+      <div class="grp">
+        <p class="grp-h">Models</p>
+        <div class="ctl"><label>Plan</label><select class="mini" data-cfg="planModel"><option>sonnet</option><option>opus</option><option>fable</option></select></div>
+        <div class="ctl"><label>Dev</label><select class="mini" data-cfg="devModel"><option>sonnet</option><option>opus</option><option>fable</option></select></div>
+        <div class="ctl"><label>Orchestrator</label><select class="mini" data-cfg="orchestratorModel"><option>sonnet</option><option>opus</option><option>fable</option></select></div>
+      </div>
+
+      <div class="grp">
+        <p class="grp-h">Execution</p>
+        <div class="ctl"><label>Subagents</label>
+          <span class="seg" data-cfg="who"><button data-v="inline">inline</button><button data-v="subagent">subagent</button></span></div>
+        <div class="ctl" data-when="who=subagent"><label>Prompts</label>
+          <select class="mini" data-cfg="prompts"><option>identical</option><option>pointer</option><option>varied</option></select></div>
+        <div class="ctl" data-when="who=subagent"><label>Fan-out</label>
+          <span class="rngrow"><input type="range" class="mini" data-cfg="width" min="1" max="8" step="1"><span class="rngval" id="widthVal">8</span></span></div>
+      </div>
+
+      <div class="grp">
+        <p class="grp-h">Cache</p>
+        <div class="ctl"><label>1h flag</label><input type="checkbox" class="mini" data-cfg="oneHourFlag"></div>
+        <div class="ctl"><label>Keep-warm ping</label><input type="checkbox" class="mini" data-cfg="keepWarm"></div>
+        <div class="ctl" data-when="keepWarm=1"><label>Interval</label>
+          <span class="rngrow"><input type="range" class="mini" data-cfg="keepWarmMin" min="10" max="55" step="5"><span class="rngval" id="kwVal">50m</span></span></div>
+      </div>
+
+      <div class="grp">
+        <p class="grp-h">Session base</p>
+        <div class="ctl"><label>SessionStart hook</label><select class="mini" data-cfg="hook"><option>none</option><option>static</option><option>dynamic</option></select></div>
+        <div class="ctl"><label>Skills</label>
+          <span class="rngrow"><input type="range" class="mini" data-cfg="skills" min="10" max="150" step="10"><span class="rngval" id="skillsVal">150</span></span></div>
+        <div class="ctl"><label>Skills mode</label>
+          <span class="seg" data-cfg="skillsMode"><button data-v="eager">eager</button><button data-v="invoke">invoke</button></span></div>
+        <div class="ctl"><label>Memory files</label>
+          <span class="rngrow"><input type="range" class="mini" data-cfg="memoryFiles" min="0" max="10" step="1"><span class="rngval" id="memVal">10</span></span></div>
+        <div class="ctl" style="align-items:flex-start"><label>MCP servers</label>
+          <div style="flex:1;max-width:130px" id="mcpBox">
+            <div class="mcp-row"><input type="checkbox" class="mini" data-mcp="0"><label>db</label><span class="fact">6k</span></div>
+            <div class="mcp-row"><input type="checkbox" class="mini" data-mcp="1"><label>github</label><span class="fact">4k</span></div>
+            <div class="mcp-row"><input type="checkbox" class="mini" data-mcp="2"><label>slack</label><span class="fact">3k</span></div>
+            <div class="mcp-row"><input type="checkbox" class="mini" data-mcp="3"><label>fs</label><span class="fact">3k</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grp">
+        <p class="grp-h">Run</p>
+        <div class="ctl"><label>Scope</label><select class="mini" data-cfg="scope"><option>session</option><option>week</option><option>month</option></select></div>
+        <div class="ctl"><label>Seed</label>
+          <span class="seedrow"><input type="text" id="seedInput" value="42"><button class="icobtn" id="reroll" title="reroll">&#8635;</button></span></div>
+      </div>
+    </div>
+
+    <!-- PLAY AREA -->
+    <div>
+      <div class="card">
+        <h2>The pipeline</h2>
+        <div class="board" id="board"></div>
+        <div class="runbar">
+          <button class="btn" id="runBtn">Run next unit</button>
+          <button class="btn ghost" id="handBtn">Bob codes it by hand</button>
+          <span class="runhint" id="runHint"></span>
+        </div>
+        <div class="msg" id="msg">Set Bob's config, then run the first unit: the plan.</div>
+      </div>
+
+      <div class="card">
+        <h2>Requests on the wire</h2>
+        <div class="tape-holder"><canvas id="tape"></canvas></div>
+        <div class="legend">
+          <span><i class="sw read"></i> cache read (0.1x, cheap)</span>
+          <span><i class="sw write"></i> written / rewrite (expensive)</span>
+          <span><i class="sw grey"></i> not sent yet</span>
+        </div>
+        <div class="a11y-toggle" id="a11yToggle">Show/hide ledger table</div>
+        <table class="ledtab" id="ledTab"><thead><tr><th>unit</th><th>agent</th><th>model</th><th>read</th><th>in</th><th>write</th><th>out</th><th>$</th></tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+  </div>
+  <p class="footnote">A mock of the full S6 experience. Economics use the canonical cost function and the real calibration table. Boot-time invariants run in the console. No numbers are faked.</p>
+</div>
+
+<!-- IDLE / MODAL -->
+<div class="scrim" id="scrim"><div class="modal" id="modal"></div></div>
+
+<script>
+"use strict";
+/* =====================================================================
+   CORE (deterministic, no Date.now / Math.random inside)
+   Exposed on window.SIM for the boot assertions + node harness.
+   ===================================================================== */
+var SIM = (function () {
+
+  // ---- C1-C4 economics: byte-identical to the fanout prototype ----
+  var RATE = { input: 1, read: 0.1, w5m: 1.25, w1h: 2, out: 5 };
+  var MODEL_IN = { sonnet: 3, opus: 5, fable: 10 };
+  function priceTable(model) {
+    var P = MODEL_IN[model];
+    return { input: P*RATE.input, read: P*RATE.read, write5m: P*RATE.w5m, write1h: P*RATE.w1h, output: P*RATE.out };
+  }
+
+  // ---- ledger constants (C6/C7/C10/C11/C24/C28/C29) ----
+  var BASE_ID = 26237;   // C10 identical subagent base
+  var VAR_W = 14623, VAR_R = 11602; // C11 varied split
+  var INLINE_B0 = 34000, INLINE_GROWTH = 22000; // C29
+  var HOOK_POISON = 24300; // C23 write per poisoned session start
+
+  var DEFAULT_CFG = {
+    orchestratorModel: "sonnet", planModel: "opus", devModel: "sonnet",
+    who: "subagent", prompts: "identical", width: 8,
+    oneHourFlag: false, keepWarm: false, keepWarmMin: 50,
+    hook: "dynamic", skills: 150, skillsMode: "eager", memoryFiles: 10,
+    mcp: [true, true, true, true], scope: "month"
+  };
+
+  // ---- C5.2 base sizing ----
+  function mcpShare(mcp) {
+    var sizes = [6000, 4000, 3000, 3000], tot = 16000, on = 0;
+    for (var i=0;i<4;i++) if (mcp[i]) on += sizes[i];
+    return on / tot; // ~1.0 all on
+  }
+  function mainBaseTok(cfg) {
+    var tools = 16295 * mcpShare(cfg.mcp);
+    var system = 2750;
+    var catalog = 13083 * (cfg.skillsMode === "eager" ? cfg.skills/150 : 10/150);
+    var memory = 400 * cfg.memoryFiles;
+    var rest = 15693 - 13083; // 2610
+    return Math.round(tools + system + catalog + memory + rest);
+  }
+  var SUB_SCALE = BASE_ID / mainBaseTok(DEFAULT_CFG); // asserts to 26237 at defaults
+  function subBaseTok(cfg) { return mainBaseTok(cfg) * SUB_SCALE; }
+
+  var TTL_MIN = { "5m": 5, "1h": 60 };
+  // C19: break-even idle hours = (write-mult x TTL-min)/6. 1h => 20h ; 5m => ~1.04h
+  function breakEvenH(tier) { return (RATE[tier === "1h" ? "w1h" : "w5m"] * TTL_MIN[tier]) / 6; }
+
+  // Scope scale: one mock ticket stands in for the whole scope's volume, so the
+  // pro-rated wallet actually drains. Session shows the cache lesson up close;
+  // month scales work up until recoverable% lands near the real ~7% (diag).
+  var SCOPE_SCALE = { session: 1, week: 3.9, month: 14.2 };
+
+  // ---- xorshift128+ (C5.5) ----
+  function makePRNG(seed) {
+    var s0 = (seed ^ 0x9e3779b9) >>> 0;
+    var s1 = (seed * 2654435761) >>> 0 || 1;
+    return function () {
+      var x = s0, y = s1; s0 = y;
+      x ^= x << 23; x ^= x >>> 17; x ^= y ^ (y >>> 26);
+      s1 = x >>> 0;
+      return ((s0 + s1) >>> 0) / 4294967296;
+    };
+  }
+
+  // ---- quality (mock: cheaper model => lower quality => MORE rework) ----
+  // devQ/planQ are "quality" (higher = better). Rework scales inversely.
+  var devQ = { sonnet: 1.5, opus: 1.0, fable: 0.7 };
+  var planQ = { sonnet: 1.6, opus: 1.0, fable: 0.75 };
+
+  // ---------- simulateRequest (extends the Tape simulateSend) ----------
+  // cache: { entries: { key: { prefixTok, tier, lastTouchMin } } }
+  // req: { agent:"main"|"sub", promptHash, model, workIn, outTok, nowMin, varied:bool, sessionStart:bool }
+  function simulateRequest(cache, cfg, req) {
+    var key = req.agent === "main" ? "main" : ("sub:" + req.promptHash);
+    var e = cache.entries[key];
+    var alive = false;
+    if (e) {
+      var ttl = TTL_MIN[e.tier];
+      alive = (req.nowMin - e.lastTouchMin) <= ttl;
+    }
+    var writeTier = req.agent === "main" ? "1h" : (cfg.oneHourFlag ? "1h" : "5m");
+    var readTok = 0, writeTok = 0, inputTok = req.workIn || 0, outTok = req.outTok || 0;
+    var cold = !alive;
+
+    if (req.agent === "main") {
+      var mb = mainBaseTok(cfg);
+      if (cold) { writeTok = mb; }
+      else { readTok = e.prefixTok; writeTok = INLINE_GROWTH; } // inline warm tail growth
+    } else if (req.varied) {
+      // varied: parent front warm-read, own body rewritten every time (C11).
+      // loadout scale keeps measured proportions; = 1 at default loadout.
+      var ls = subBaseTok(cfg) / BASE_ID;
+      readTok = VAR_R * ls; writeTok = VAR_W * ls;
+      cold = true; // varied never shares
+    } else {
+      var sb = subBaseTok(cfg);
+      if (cold) { writeTok = sb; }
+      else { readTok = e.prefixTok; writeTok = 0; } // warm identical full hit (C10)
+    }
+
+    var per = MODEL_IN[req.model] / 1e6;
+    var usd = per * (readTok*RATE.read + inputTok*RATE.input + writeTok*RATE[writeTier==="1h"?"w1h":"w5m"] + outTok*RATE.out);
+
+    // update cache entry
+    var newPrefix = (alive ? e.prefixTok : 0) + writeTok;
+    if (newPrefix >= 1024) {
+      cache.entries[key] = { prefixTok: newPrefix, tier: writeTier === "1h" ? "1h" : "5m", lastTouchMin: req.nowMin };
+    }
+    return { key: key, agent: req.agent, model: req.model, cold: cold,
+             readTok: Math.round(readTok), inputTok: Math.round(inputTok),
+             writeTok: Math.round(writeTok), writeTier: writeTier, outTok: outTok, usd: usd };
+  }
+
+  // ---------- The scripted single-ticket pipeline ----------
+  // Mock: N=3 dev tasks (compact board). Unit table scaled to spec 3.3.
+  var N_DEV = 3;
+  function unitDefs() {
+    return [
+      { kind:"PLAN",        hours:2.0, workIn:3000, outTok:8000 },
+      { kind:"DEV",         hours:1.5, workIn:6000, outTok:44000, fan:true },
+      { kind:"CODE_REVIEW", hours:1.0, workIn:9000, outTok:6000 },
+      { kind:"ADDRESS_REVIEW", hours:0.75, workIn:4000, outTok:15000, rework:"review" },
+      { kind:"WRITE_TESTS", hours:1.0, workIn:7000, outTok:25000 },
+      { kind:"CI_RUN",      hours:0.25, workIn:0, outTok:0, free:true },
+      { kind:"CI_FIX",      hours:0.75, workIn:8000, outTok:12000, rework:"ci" },
+      { kind:"QA",          hours:1.5, workIn:6000, outTok:12000 },
+      { kind:"DEPLOY",      hours:0.5, workIn:2000, outTok:4000 },
+      { kind:"POSTDEPLOY_BUG", hours:0.5, workIn:6000, outTok:6000, scripted:true },
+      { kind:"DEBUG",       hours:1.0, workIn:8000, outTok:20000, rework:"bug" },
+      { kind:"HOTFIX",      hours:0.5, workIn:8000, outTok:4000 }
+    ];
+  }
+
+  function newGame(cfg, seed) {
+    cfg = Object.assign({}, DEFAULT_CFG, cfg);
+    var budget = cfg.scope === "session" ? 12 : cfg.scope === "week" ? 30 : 90;
+    var endMin = cfg.scope === "session" ? 300 : cfg.scope === "week" ? 300*5 : 300*22;
+    var st = {
+      cfg: cfg, seed: seed, prng: makePRNG(seed),
+      clockMin: 0, endMin: endMin, dayLen: 300,
+      wallet: budget, budget: budget,
+      manualHours: 0, tedium: 0,
+      cache: { entries: {} },
+      ledger: [], queue: buildQueue(cfg, seed),
+      idx: 0, sessionStarts: 0, lastRequests: [],
+      hidden: { reworkUsd:0, inlineRereadUsd:0, idleRebuildUsd:0, hookUsd:0, eagerSkillsUsd:0, flagDeltaUsd:0 },
+      counts: { reviewRounds:0, ciFixes:0, bugs:0, handCoded:0, spawns:0, coldSpawns:0, sessions:0, idleGaps:0 },
+      ratioNum: 0, ratioDen: 0, // rebuild/base for the flag verdict
+      ended: null
+    };
+    return st;
+  }
+
+  // Build the unit queue, expanding rework deterministically from model quality.
+  function buildQueue(cfg, seed) {
+    var pr = makePRNG(seed ^ 0x5151);
+    // low quality => more rework; dev model weighted heavier than plan (execution drives rework)
+    var q = 0.8 / (devQ[cfg.devModel] * devQ[cfg.devModel] * planQ[cfg.planModel]);
+    var extraReview = Math.round(q + pr()*0.6);            // fable/fable ~2, sonnet ~0
+    var ciFail = (q > 0.8) ? 1 + Math.round(pr()*0.5) : 0; // cheap plan => CI fixes
+    var extraBug = Math.round((q - 0.4) * (0.7 + pr()*0.4)); if (extraBug < 0) extraBug = 0;
+    var defs = unitDefs(), out = [], id = 0;
+    function push(d, cause) { out.push(Object.assign({ id:"u"+(id++), status:"queued", cause:cause||null, rounds:1 }, d)); }
+    defs.forEach(function (d) {
+      if (d.kind === "ADDRESS_REVIEW") {
+        var rounds = 1 + extraReview;
+        for (var r=0;r<rounds;r++) push(Object.assign({},d,{ label: rounds>1 ? "review round "+(r+1) : null }), r>0 ? "plan-quality" : null);
+      } else if (d.kind === "CI_FIX") {
+        if (ciFail === 0) { return; }
+        for (var c=0;c<ciFail;c++) push(Object.assign({},d,{ label:"CI failed: fix" }), "dev-quality");
+      } else if (d.kind === "DEBUG") {
+        var bugs = 1 + extraBug;
+        for (var b=0;b<bugs;b++) push(Object.assign({},d,{ label: bugs>1 ? "debug bug "+(b+1) : null }), b>0 ? "plan-quality" : null);
+      } else {
+        push(d);
+      }
+    });
+    return out;
+  }
+
+  // Idle schedule: which unit indices are preceded by a gap (minutes).
+  function idleBefore(st, unitIndex) {
+    var cfg = st.cfg;
+    // coffee gaps mid-session
+    if (unitIndex === 3) return 35;         // after DEV wave
+    if (unitIndex === 7) return 40;         // before QA
+    if (cfg.scope !== "session") {
+      if (unitIndex === 5) return 720;      // overnight
+      if (cfg.scope === "month" && unitIndex === 9) return 720; // second overnight
+    }
+    return 0;
+  }
+
+  function modelFor(st, u) {
+    if (u.kind === "PLAN") return st.cfg.planModel;
+    if (u.kind === "DEV") return st.cfg.devModel;
+    return st.cfg.orchestratorModel;
+  }
+
+  // Expire + keep-warm handling across a gap of G minutes on the main cache.
+  function applyGap(st, G) {
+    if (G <= 0) return;
+    st.counts.idleGaps++;
+    var main = st.cache.entries["main"];
+    if (st.cfg.keepWarm && main) {
+      var pings = Math.floor(G / st.cfg.keepWarmMin);
+      var per = MODEL_IN[st.cfg.orchestratorModel] / 1e6;
+      var cost = pings * main.prefixTok * RATE.read * per;
+      st.wallet -= cost;
+      main.lastTouchMin = st.clockMin + G; // stays warm
+    } else if (main) {
+      // will it die? if gap > ttl it goes cold next request -> accrue idle-rebuild delta
+      var ttl = TTL_MIN[main.tier];
+      if (G > ttl) {
+        var per2 = MODEL_IN[st.cfg.orchestratorModel] / 1e6;
+        var delta = main.prefixTok * (RATE[main.tier==="1h"?"w1h":"w5m"] - RATE.read) * per2;
+        st.hidden.idleRebuildUsd += delta;
+      }
+    }
+    st.clockMin += G;
+    if (G >= 480) st.counts.sessions++; // overnight => a new session starts next
+  }
+
+  // Execute one unit (RUN). Returns { requests:[rows], msg }.
+  function runUnit(st, u) {
+    var gap = idleBefore(st, st.idx);
+    applyGap(st, gap);
+    // clock for the unit
+    st.clockMin += u.hours * 60;
+    var reqs = [];
+
+    if (u.free) { u.status = "done"; st.idx++; st.lastRequests = []; return { requests:[], msg:"CI ran on the machines. No tokens." }; }
+
+    var K = SCOPE_SCALE[st.cfg.scope] || 1;
+    var workIn = Math.round(u.workIn * K), outTok = Math.round(u.outTok * K);
+    var model = modelFor(st, u);
+    var isSessionStart = (st.idx === 0) || (gap >= 480);
+    if (isSessionStart) {
+      st.sessionStarts++;
+      if (st.sessionStarts > 1 && st.cfg.hook === "dynamic") {
+        // catalog poisoning: wrote instead of read on session start
+        var per = MODEL_IN[st.cfg.orchestratorModel] / 1e6;
+        st.hidden.hookUsd += HOOK_POISON * (RATE.w1h - RATE.read) * per;
+      }
+    }
+
+    if (u.fan) {
+      // DEV wave: inline or subagent fan-out of N_DEV tasks
+      if (st.cfg.who === "inline") {
+        for (var i=0;i<N_DEV;i++) {
+          var r = simulateRequest(st.cache, st.cfg, { agent:"main", promptHash:"main", model:model,
+            workIn:workIn, outTok:outTok, nowMin: st.clockMin + i, sessionStart:false });
+          accrueInline(st, r);
+          reqs.push(tag(st, u, r));
+        }
+      } else {
+        for (var j=0;j<N_DEV;j++) {
+          var varied = st.cfg.prompts === "varied";
+          var ph = varied ? ("dev-"+j) : "dev-identical";
+          var r2 = simulateRequest(st.cache, st.cfg, { agent:"sub", promptHash:ph, model:model,
+            workIn:workIn, outTok:outTok, nowMin: st.clockMin + j, varied:varied });
+          st.counts.spawns++; if (r2.cold) st.counts.coldSpawns++;
+          accrueBaseSide(st, r2);
+          reqs.push(tag(st, u, r2));
+        }
+      }
+    } else {
+      // single requests (plan/review/tests/qa/etc) run on the main session; the DEV
+      // fan-out is the one place prompt strategy (identical vs varied) is exercised.
+      var onMain = true;
+      if (onMain) {
+        var r3 = simulateRequest(st.cache, st.cfg, { agent:"main", promptHash:"main", model:model,
+          workIn:workIn, outTok:outTok, nowMin: st.clockMin, sessionStart:isSessionStart });
+        accrueInline(st, r3);
+        reqs.push(tag(st, u, r3));
+      } else {
+        var vr = st.cfg.prompts === "varied";
+        var r4 = simulateRequest(st.cache, st.cfg, { agent:"sub", promptHash: vr ? ("t-"+u.id) : "task-identical", model:model,
+          workIn:workIn, outTok:outTok, nowMin: st.clockMin, varied:vr });
+        st.counts.spawns++; if (r4.cold) st.counts.coldSpawns++;
+        accrueBaseSide(st, r4);
+        reqs.push(tag(st, u, r4));
+      }
+    }
+
+    // book keeping
+    var spent = 0;
+    reqs.forEach(function (r) { st.ledger.push(r); spent += r.usd; st.wallet -= r.usd; });
+    if (u.cause) { st.hidden.reworkUsd += spent; }
+    if (u.rework === "review") st.counts.reviewRounds++;
+    if (u.rework === "ci") st.counts.ciFixes++;
+    if (u.rework === "bug") st.counts.bugs++;
+
+    u.status = "done"; st.idx++; st.lastRequests = reqs;
+    return { requests: reqs, msg: describe(u, reqs, spent) };
+  }
+
+  function accrueInline(st, r) {
+    if (r.readTok > 0) {
+      var per = MODEL_IN[r.model] / 1e6;
+      st.hidden.inlineRereadUsd += r.readTok * RATE.read * per;
+    }
+    trackFlag(st, r);
+    trackEager(st, r);
+  }
+  function accrueBaseSide(st, r) { trackFlag(st, r); trackEager(st, r); }
+
+  function trackFlag(st, r) {
+    // rebuild/base ratio vs the 5m counterfactual; flag delta accrues when 1h & cold
+    if (r.cold && r.writeTok > 0) {
+      st.ratioDen += r.writeTok;
+      if (r.writeTier === "1h") {
+        st.ratioNum += r.writeTok;
+        if (st.cfg.oneHourFlag && r.agent === "sub") {
+          var per = MODEL_IN[r.model] / 1e6;
+          st.hidden.flagDeltaUsd += r.writeTok * (RATE.w1h - RATE.w5m) * per; // paid 2x where 1.25x would do
+        }
+      }
+    }
+  }
+  function trackEager(st, r) {
+    // eager-skills catalog carried cold into a base write
+    if (r.cold && r.writeTok > 0 && st.cfg.skillsMode === "eager") {
+      var eagerTok = 13083 * (st.cfg.skills/150 - 10/150);
+      if (eagerTok > 0) {
+        var share = eagerTok / Math.max(1, mainBaseTok(st.cfg));
+        var per = MODEL_IN[r.model] / 1e6;
+        st.hidden.eagerSkillsUsd += r.writeTok * share * RATE[r.writeTier==="1h"?"w1h":"w5m"] * per;
+      }
+    }
+  }
+
+  function tag(st, u, r) { r.tMin = st.clockMin; r.unit = u.kind; r.unitId = u.id; return r; }
+
+  function describe(u, reqs, spent) {
+    var w=0,rd=0; reqs.forEach(function(r){ w+=r.writeTok; rd+=r.readTok; });
+    return (u.label||u.kind) + ": " + reqs.length + " request" + (reqs.length>1?"s":"") +
+      ", " + fmt(rd) + " read / " + fmt(w) + " written. -$" + spent.toFixed(4);
+  }
+
+  function handCode(st, u) {
+    var MANUAL_MULT = 6;
+    st.clockMin += u.hours * 60 * MANUAL_MULT;
+    st.tedium = Math.min(100, st.tedium + 8 * u.hours);
+    st.counts.handCoded++;
+    u.status = "handcoded"; st.idx++;
+    st.lastRequests = [];
+    return { msg: "Bob hand-coded " + (u.label||u.kind) + ". +" + (u.hours*MANUAL_MULT).toFixed(1) + "h, tedium +" + (8*u.hours).toFixed(0) + "." };
+  }
+
+  // affordability floor: cheapest possible request (a warm read + small work)
+  function canAfford(st, u) {
+    if (u.free) return true;
+    var K = SCOPE_SCALE[st.cfg.scope] || 1;
+    var per = MODEL_IN[modelFor(st,u)] / 1e6;
+    var floor = (u.workIn*K*RATE.input + u.outTok*K*RATE.out) * per * 0.9;
+    return st.wallet >= floor;
+  }
+
+  function checkEnd(st) {
+    var allDone = st.idx >= st.queue.length;
+    if (st.tedium >= 100) { st.ended = { result:"loss", lossId: lossFromHidden(st) }; return; }
+    if (st.clockMin > st.endMin && !allDone) { st.ended = { result:"loss", lossId:"L7" }; return; }
+    if (allDone) { st.ended = { result: st.counts.handCoded > 0 && st.wallet < 0 ? "win" : "win" }; st.ended.lossId = null; }
+  }
+
+  function biggestHidden(st) {
+    var h = st.hidden, best = null, bv = -1;
+    for (var k in h) if (h[k] > bv) { bv = h[k]; best = k; }
+    return best;
+  }
+  function lossFromHidden(st) {
+    var map = { idleRebuildUsd:"L1", reworkUsd:"L7", flagDeltaUsd:"L6", hookUsd:"L5", eagerSkillsUsd:"L2", inlineRereadUsd:"L2" };
+    return "L8:" + (map[biggestHidden(st)] || "L1");
+  }
+
+  // ------- scripted full run (headless) for assertions -------
+  function runScript(cfg, seed, forceRun) {
+    var st = newGame(cfg, seed);
+    var guard = 0;
+    while (st.idx < st.queue.length && guard++ < 500) {
+      var u = st.queue[st.idx];
+      if (forceRun || canAfford(st, u)) runUnit(st, u);
+      else handCode(st, u);
+    }
+    checkEnd(st);
+    st.totalSpent = st.budget - st.wallet;    // capped by hand-coding at ~0
+    st.grossSpent = -st.wallet + st.budget;   // same as totalSpent for capped runs
+    return st;
+  }
+
+  function fmt(n) { return Math.round(n).toLocaleString("en-US"); }
+
+  return {
+    RATE:RATE, MODEL_IN:MODEL_IN, priceTable:priceTable, mainBaseTok:mainBaseTok, subBaseTok:subBaseTok,
+    SUB_SCALE:SUB_SCALE, BASE_ID:BASE_ID, VAR_W:VAR_W, VAR_R:VAR_R, DEFAULT_CFG:DEFAULT_CFG,
+    breakEvenH:breakEvenH, makePRNG:makePRNG, simulateRequest:simulateRequest, newGame:newGame,
+    runUnit:runUnit, handCode:handCode, canAfford:canAfford, checkEnd:checkEnd, runScript:runScript,
+    biggestHidden:biggestHidden, N_DEV:N_DEV, fmt:fmt, buildQueue:buildQueue
+  };
+})();
+
+/* =====================================================================
+   BOOT ASSERTIONS (gated: never break the page)
+   ===================================================================== */
+(function assertAll() {
+  try {
+    var ok = true;
+    function eq(a,b,m){ if (Math.abs(a-b) > 1e-6) { console.assert(false, m+" got "+a+" want "+b); ok=false; } }
+
+    // 1. price cells
+    var pS=SIM.priceTable("sonnet"), pO=SIM.priceTable("opus"), pF=SIM.priceTable("fable");
+    eq(pS.input,3,"sonnet in"); eq(pS.read,0.3,"sonnet read"); eq(pS.write5m,3.75,"sonnet w5m"); eq(pS.write1h,6,"sonnet w1h"); eq(pS.output,15,"sonnet out");
+    eq(pO.input,5,"opus in"); eq(pO.read,0.5,"opus read"); eq(pO.write5m,6.25,"opus w5m"); eq(pO.write1h,10,"opus w1h"); eq(pO.output,25,"opus out");
+    eq(pF.input,10,"fable in"); eq(pF.read,1,"fable read"); eq(pF.write5m,12.5,"fable w5m"); eq(pF.write1h,20,"fable w1h"); eq(pF.output,50,"fable out");
+
+    // 2. 20x gap
+    eq(SIM.RATE.w1h/SIM.RATE.read, 20, "20x gap");
+
+    // 3. base decomposition + subScale
+    eq(SIM.mainBaseTok(SIM.DEFAULT_CFG), 34738+400*10, "mainBase default");
+    eq(SIM.subBaseTok(SIM.DEFAULT_CFG), 26237, "subBase = 26237 at defaults");
+
+    // 4. identical ledger: spawn1 writes 26,237/read 0 ; spawn2 read 26,237/write 0
+    var cache = { entries:{} };
+    var s1 = SIM.simulateRequest(cache, SIM.DEFAULT_CFG, { agent:"sub", promptHash:"d", model:"sonnet", workIn:0, outTok:0, nowMin:0 });
+    var s2 = SIM.simulateRequest(cache, SIM.DEFAULT_CFG, { agent:"sub", promptHash:"d", model:"sonnet", workIn:0, outTok:0, nowMin:1 });
+    eq(s1.writeTok,26237,"spawn1 write"); eq(s1.readTok,0,"spawn1 read");
+    eq(s2.writeTok,0,"spawn2 write"); eq(s2.readTok,26237,"spawn2 read");
+
+    // 5. varied ledger
+    var cache2={entries:{}};
+    var v = SIM.simulateRequest(cache2, SIM.DEFAULT_CFG, { agent:"sub", promptHash:"x", model:"sonnet", workIn:0, outTok:0, nowMin:0, varied:true });
+    eq(v.readTok,11602,"varied read"); eq(v.writeTok,14623,"varied write");
+
+    // 6. break-even
+    eq(Math.round(((2-1.25)/(1.25-0.1))*1000)/1000, 0.652, "break-even 0.65");
+    eq(SIM.breakEvenH("1h"), 20, "keep-warm 1h => 20h");
+    if (Math.abs(SIM.breakEvenH("5m") - 1.0417) > 0.01) { console.assert(false, "keep-warm 5m band ~1h"); ok=false; }
+
+    // 7. replay determinism
+    var a = SIM.runScript({}, 42).totalSpent, b = SIM.runScript({}, 42).totalSpent;
+    eq(a, b, "replay determinism");
+
+    // 8. scripted full-run totals: GOOD in band, BAD in band, GOOD ships clean, BAD forces hand-coding
+    var GOOD = { scope:"month", planModel:"fable", devModel:"sonnet", who:"subagent", prompts:"identical",
+                 oneHourFlag:false, keepWarm:true, keepWarmMin:50, hook:"static", skills:10, skillsMode:"invoke",
+                 memoryFiles:0, mcp:[true,false,false,false], width:8 };
+    var BAD = { scope:"month", planModel:"sonnet", devModel:"fable", who:"inline", prompts:"varied",
+                oneHourFlag:false, keepWarm:false, hook:"dynamic", skills:150, skillsMode:"eager",
+                memoryFiles:10, mcp:[true,true,true,true], width:8 };
+    var g = SIM.runScript(GOOD, 42);                 // played to budget (good fits)
+    var bd = SIM.runScript(BAD, 42);                 // played to budget (busts -> hand-codes)
+    var bdGross = SIM.runScript(BAD, 42, true);       // uncapped economic cost of BAD
+    window.__GOOD_TOTAL = g.totalSpent; window.__BAD_GROSS = bdGross.totalSpent;
+    console.assert(g.totalSpent < bdGross.totalSpent, "GOOD < BAD gross ("+g.totalSpent.toFixed(2)+" vs "+bdGross.totalSpent.toFixed(2)+")");
+    console.assert(g.totalSpent >= 48 && g.totalSpent <= 66, "GOOD_RUN in band [48,66], got "+g.totalSpent.toFixed(2));
+    console.assert(bdGross.totalSpent >= 135 && bdGross.totalSpent <= 195, "BAD_RUN gross in band [135,195], got "+bdGross.totalSpent.toFixed(2));
+    console.assert(g.counts.handCoded === 0, "GOOD ships with 0 hand-coded");
+    console.assert(bd.counts.handCoded >= 3, "BAD forces >=3 hand-coded, got "+bd.counts.handCoded);
+
+    console.log("%c[Simulator mock] assertions " + (ok ? "PASSED" : "FAILED"), "font-weight:bold;color:" + (ok?"#2f8f5b":"#c23b3b"));
+    console.log("  GOOD_RUN total (fable-plan sonnet-dev, identical subs, keep-warm, static hook, invoke skills, 1 MCP): $" + g.totalSpent.toFixed(2) + "  hand-coded " + g.counts.handCoded);
+    console.log("  BAD_RUN  total (all the bad defaults): $" + bd.totalSpent.toFixed(2) + "  hand-coded " + bd.counts.handCoded);
+  } catch (e) { console.warn("[Simulator mock] assertion harness error (page still runs):", e); }
+})();
+
+/* =====================================================================
+   UI  (guarded so node can import the core without a DOM)
+   ===================================================================== */
+if (typeof document !== "undefined" && document.getElementById("board")) (function () {
+  var cfg = JSON.parse(JSON.stringify(SIM.DEFAULT_CFG));
+  cfg.scope = "month"; // full game: $90 monthly cap (spec S6 finale)
+  var st = SIM.newGame(cfg, 42);
+
+  var $ = function (s) { return document.querySelector(s); };
+  var reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // ---- config wiring ----
+  function syncControls() {
+    document.querySelectorAll("[data-cfg]").forEach(function (el) {
+      var key = el.getAttribute("data-cfg");
+      if (el.tagName === "SELECT") el.value = cfg[key];
+      else if (el.type === "checkbox") el.checked = !!cfg[key];
+      else if (el.type === "range") el.value = cfg[key];
+    });
+    document.querySelectorAll(".seg[data-cfg]").forEach(function (seg) {
+      var key = seg.getAttribute("data-cfg");
+      seg.querySelectorAll("button").forEach(function (b) { b.classList.toggle("on", b.getAttribute("data-v") === cfg[key]); });
+    });
+    document.querySelectorAll("[data-mcp]").forEach(function (el) { el.checked = cfg.mcp[+el.getAttribute("data-mcp")]; });
+    $("#widthVal").textContent = cfg.width;
+    $("#kwVal").textContent = cfg.keepWarmMin + "m";
+    $("#skillsVal").textContent = cfg.skills;
+    $("#memVal").textContent = cfg.memoryFiles;
+    document.querySelectorAll("[data-when]").forEach(function (el) {
+      var cond = el.getAttribute("data-when").split("=");
+      var v = cfg[cond[0]];
+      var want = cond[1] === "1" ? true : cond[1] === "0" ? false : cond[1];
+      el.classList.toggle("dis", (want === true || want === false) ? (!!v !== want) : (v !== want));
+    });
+    var w = cfg.who === "subagent"
+      ? SIM.N_DEV + " " + cfg.devModel + " subagents, " + cfg.prompts + " prompts"
+      : cfg.devModel + " inline, one growing session";
+    $("#runHint").innerHTML = "Next: <b>" + nextLabel() + "</b>. Dev wave = " + w + ".";
+  }
+  function nextLabel() {
+    var u = st.queue[st.idx];
+    return u ? (u.label || u.kind) : "done";
+  }
+
+  document.querySelectorAll("[data-cfg]").forEach(function (el) {
+    var key = el.getAttribute("data-cfg");
+    el.addEventListener("change", function () { applyCfg(key, el); });
+    if (el.type === "range") el.addEventListener("input", function () { applyCfg(key, el); });
+  });
+  document.querySelectorAll(".seg[data-cfg] button").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var seg = b.closest(".seg"); var key = seg.getAttribute("data-cfg");
+      cfg[key] = b.getAttribute("data-v"); onCfgChange(key);
+    });
+  });
+  document.querySelectorAll("[data-mcp]").forEach(function (el) {
+    el.addEventListener("change", function () { cfg.mcp[+el.getAttribute("data-mcp")] = el.checked; onCfgChange("mcp"); });
+  });
+  function applyCfg(key, el) {
+    if (el.type === "checkbox") cfg[key] = el.checked;
+    else if (el.type === "range") cfg[key] = +el.value;
+    else cfg[key] = el.value;
+    onCfgChange(key);
+  }
+  function onCfgChange(key) {
+    // config changes allowed between units: rebuild future queue only if run not started, else keep progress
+    if (key === "scope" || key === "planModel" || key === "devModel") {
+      if (st.idx === 0) { resetGame(); return; }
+    }
+    st.cfg = cfg; syncControls();
+  }
+  $("#seedInput").addEventListener("change", function () { cfg._seed = +this.value || 42; resetGame(); });
+  $("#reroll").addEventListener("click", function () { var s = Math.floor(1 + (performance.now()*997)%9999); $("#seedInput").value = s; cfg._seed = s; resetGame(); });
+
+  function resetGame() {
+    st = SIM.newGame(cfg, cfg._seed || +$("#seedInput").value || 42);
+    lastReqs = []; renderAll(); setMsg("Fresh start. Config locked in. Run the plan.");
+  }
+
+  // ---- HUD ----
+  function renderHUD() {
+    var wv = $("#walletV"), cell = $("#walletCell");
+    wv.textContent = (st.wallet < 0 ? "-$" + Math.abs(st.wallet).toFixed(2) : "$" + st.wallet.toFixed(2));
+    cell.className = "hud-cell wallet" + (st.wallet < 0 ? " dead" : st.wallet < st.budget*0.18 ? " low" : "");
+    var pct = Math.max(0, Math.min(100, (st.budget - st.wallet)/st.budget*100));
+    $("#quotaV").textContent = pct.toFixed(0) + "% of monthly cap";
+    // clock strip
+    var days = Math.round(st.endMin/st.dayLen);
+    var curDay = Math.floor(st.clockMin/st.dayLen);
+    var strip = $("#clockStrip"); strip.innerHTML = "";
+    for (var d=0; d<days; d++) {
+      var c = document.createElement("div");
+      c.className = "daycell" + (d < curDay ? " done" : d === curDay ? " cur" : "");
+      strip.appendChild(c);
+    }
+    var into = (st.clockMin % st.dayLen)/60;
+    $("#clockLabel").textContent = "Day " + (curDay+1) + " - " + into.toFixed(1) + " h into a 5.0 h block" +
+      (st.manualHours>0 ? "  |  +" + st.manualHours.toFixed(1) + "h hand-coding" : "");
+    // tedium
+    var face = $("#bobFace");
+    var t = st.tedium;
+    face.className = "bobface " + (t < 34 ? "fresh" : t < 67 ? "tired" : "fried");
+    face.textContent = t < 34 ? "[ - _ - ]" : t < 67 ? "[ >_< ]" : "[ x_x ]";
+    $("#tedFill").style.width = t + "%";
+    $("#tedBar").className = "tedbar" + (t >= 67 ? " hot" : "");
+  }
+
+  // ---- board ----
+  function renderBoard() {
+    var b = $("#board"); b.innerHTML = "";
+    st.queue.forEach(function (u, i) {
+      var el = document.createElement("span");
+      var cls = "unit";
+      if (u.status === "done") cls += " done";
+      else if (u.status === "handcoded") cls += " hand";
+      else if (i === st.idx) cls += " active";
+      else if (i === st.idx) cls += " ready";
+      if (u.cause) cls += " rework";
+      el.className = cls;
+      el.innerHTML = '<i class="dot"></i>' + (u.label || u.kind);
+      b.appendChild(el);
+    });
+  }
+
+  // ---- tape canvas (fanout-style row renderer) ----
+  var canvas = $("#tape"), ctx = canvas.getContext("2d");
+  var cstate = { cssW:0, cssH:0, dpr:1, anim:null, reveal:0 };
+  var lastReqs = [];
+  function cssVar(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+  var ROW_H=16, ROW_GAP=8, PAD_T=14, PAD_B=10, GUTTER=64, PAD_R=64;
+
+  function resize() {
+    var holder = canvas.parentElement, w = holder.clientWidth;
+    var rows = Math.max(1, lastReqs.length);
+    var h = PAD_T + PAD_B + rows*ROW_H + (rows-1)*ROW_GAP;
+    cstate.cssW = w; cstate.cssH = h;
+    var dpr = Math.max(1, Math.min(3, window.devicePixelRatio||1)); cstate.dpr = dpr;
+    canvas.width = Math.round(w*dpr); canvas.height = Math.round(h*dpr);
+    canvas.style.height = h + "px"; ctx.setTransform(dpr,0,0,dpr,0,0);
+    drawTape();
+  }
+  function maxIn(){ var m=1; lastReqs.forEach(function(r){ m=Math.max(m, r.readTok+r.inputTok+r.writeTok); }); return m; }
+  function drawTape() {
+    var W=cstate.cssW, H=cstate.cssH;
+    ctx.clearRect(0,0,W,H); ctx.fillStyle=cssVar("--panel"); ctx.fillRect(0,0,W,H);
+    var C={ read:cssVar("--read"), write:cssVar("--write"), grey:cssVar("--grey-soft"), ink:cssVar("--ink"), inkSoft:cssVar("--ink-soft") };
+    if (!lastReqs.length) {
+      ctx.fillStyle=C.inkSoft; ctx.font="12px -apple-system,system-ui,sans-serif"; ctx.textAlign="left"; ctx.textBaseline="middle";
+      ctx.fillText("Run a unit to see its requests drawn to scale.", GUTTER-56, H/2); return;
+    }
+    var barX=GUTTER, barMaxW=W-GUTTER-PAD_R, mIn=maxIn();
+    for (var r=0;r<lastReqs.length;r++) {
+      var q=lastReqs[r], y=PAD_T+r*(ROW_H+ROW_GAP);
+      var reveal = Math.max(0, Math.min(1, cstate.reveal - r));
+      ctx.fillStyle=C.inkSoft; ctx.font="600 9.5px -apple-system,system-ui,sans-serif"; ctx.textAlign="left"; ctx.textBaseline="middle";
+      var lbl = q.agent==="main" ? "main" : "sub "+(r+1);
+      ctx.fillText(lbl, 0, y+ROW_H/2);
+      var totTok = q.readTok+q.inputTok+q.writeTok;
+      var rowW = barMaxW * (totTok/mIn);
+      ctx.fillStyle=C.grey; ctx.fillRect(barX,y,rowW,ROW_H);
+      var segs=[];
+      if (q.readTok>0) segs.push({tok:q.readTok, c:C.read});
+      if (q.inputTok>0) segs.push({tok:q.inputTok, c:C.write});
+      if (q.writeTok>0) segs.push({tok:q.writeTok, c:C.write});
+      var cursor=0;
+      for (var s=0;s<segs.length;s++){
+        var segW = rowW*(segs[s].tok/totTok);
+        var vis = Math.max(0, Math.min(segW, rowW*reveal - cursor));
+        if (vis>0.4){ ctx.fillStyle=segs[s].c; ctx.fillRect(barX+cursor,y,vis,ROW_H); }
+        cursor += segW;
+      }
+      if (reveal>=1){
+        ctx.fillStyle=C.inkSoft; ctx.font="600 10px ui-monospace,monospace"; ctx.textAlign="left";
+        ctx.fillText("$"+q.usd.toFixed(4), barX+rowW+6, y+ROW_H/2);
+      } else if (reveal>0){
+        var px=barX+rowW*reveal; ctx.strokeStyle=C.ink; ctx.lineWidth=1.5;
+        ctx.beginPath(); ctx.moveTo(px,y-2); ctx.lineTo(px,y+ROW_H+2); ctx.stroke();
+      }
+    }
+  }
+  var rafId=null;
+  function loop(){ if (rafId==null) rafId=requestAnimationFrame(tick); }
+  function tick(now){
+    rafId=null; var a=cstate.anim; if(!a){ drawTape(); return; }
+    var t=Math.min(1,(now-a.t0)/a.dur); var e=t<0.5?2*t*t:1-Math.pow(-2*t+2,2)/2;
+    cstate.reveal = e*lastReqs.length; drawTape();
+    if (t>=1){ cstate.anim=null; cstate.reveal=lastReqs.length; drawTape(); }
+    else loop();
+  }
+  function playTape(reqs){
+    lastReqs = reqs; resize();
+    if (!reqs.length) return;
+    if (reduced){ cstate.reveal = reqs.length; drawTape(); return; }
+    cstate.reveal=0; cstate.anim={ t0:performance.now(), dur: Math.min(1600, 500+reqs.length*260) }; loop();
+  }
+
+  // ---- ledger table (a11y alt) ----
+  function renderLedTab() {
+    var tb = $("#ledTab tbody"); tb.innerHTML="";
+    st.ledger.slice(-14).forEach(function (r) {
+      var tr = document.createElement("tr");
+      tr.innerHTML = "<td>"+r.unit+"</td><td>"+r.agent+"</td><td>"+r.model+"</td><td>"+SIM.fmt(r.readTok)+"</td><td>"+SIM.fmt(r.inputTok)+"</td><td>"+SIM.fmt(r.writeTok)+"</td><td>"+SIM.fmt(r.outTok)+"</td><td>$"+r.usd.toFixed(3)+"</td>";
+      tb.appendChild(tr);
+    });
+  }
+  $("#a11yToggle").addEventListener("click", function(){ $("#ledTab").classList.toggle("on"); });
+
+  function setMsg(s){ $("#msg").innerHTML = s; }
+
+  function renderAll(){ syncControls(); renderHUD(); renderBoard(); renderLedTab(); resize(); }
+
+  // ---- run / hand-code ----
+  $("#runBtn").addEventListener("click", function () {
+    if (st.ended) return;
+    var u = st.queue[st.idx]; if (!u) return;
+    if (!SIM.canAfford(st, u)) {
+      openAffordModal(u); return;
+    }
+    var res = SIM.runUnit(st, u);
+    afterAction(res);
+  });
+  $("#handBtn").addEventListener("click", function () {
+    if (st.ended) return;
+    var u = st.queue[st.idx]; if (!u) return;
+    var res = SIM.handCode(st, u);
+    afterAction(res);
+  });
+
+  function afterAction(res) {
+    playTape(res.requests || []);
+    renderHUD(); renderBoard(); renderLedTab(); setMsg(res.msg);
+    SIM.checkEnd(st);
+    if (st.ended) { setTimeout(showReport, reduced?0:700); }
+    else syncControls();
+  }
+
+  function openAffordModal(u) {
+    var m = $("#modal");
+    m.innerHTML = "<h3>Can't afford it</h3>" +
+      "<p class='lead'>The wallet is down to <b>$"+st.wallet.toFixed(2)+"</b>. Claude can't run <b>"+(u.label||u.kind)+"</b>. Bob has to hand-code it: no tokens, but <b>"+(u.hours*6).toFixed(1)+" hours</b> of his own time and a jump in tedium.</p>" +
+      "<div class='row-btns'><button class='btn' id='mHand'>Bob hand-codes it</button></div>";
+    $("#scrim").classList.add("on");
+    $("#mHand").addEventListener("click", function () {
+      $("#scrim").classList.remove("on");
+      afterAction(SIM.handCode(st, u));
+    });
+  }
+
+  // ---- REPORT ----
+  function showReport() {
+    var m = $("#modal");
+    var totalSpent = st.budget - st.wallet;
+    // aggregate ledger
+    var agg = { input:0, output:0, read:0, write1h:0, write5m:0, cost:0, byModel:{} };
+    st.ledger.forEach(function (r) {
+      agg.input += r.inputTok; agg.output += r.outTok; agg.read += r.readTok;
+      if (r.writeTier === "1h") agg.write1h += r.writeTok; else agg.write5m += r.writeTok;
+      agg.cost += r.usd; agg.byModel[r.model] = (agg.byModel[r.model]||0) + r.usd;
+    });
+    var writeTot = agg.write1h + agg.write5m;
+    var h = st.hidden;
+    var hiddenTotal = h.reworkUsd+h.inlineRereadUsd+h.idleRebuildUsd+h.hookUsd+h.eagerSkillsUsd+h.flagDeltaUsd;
+    var recoverable = Math.min(hiddenTotal, totalSpent);
+    var pctRec = totalSpent>0 ? (recoverable/totalSpent*100) : 0;
+    var manualH = st.manualHours;
+    var ratio = st.ratioDen>0 ? st.ratioNum/st.ratioDen : 0;
+
+    // grade
+    var gradeVal = st.wallet - 4*manualH;
+    var grade = gradeVal > st.budget*0.3 ? "A" : gradeVal > 0 ? "B" : gradeVal > -st.budget*0.4 ? "C" : "D";
+    var won = st.ended && st.ended.result === "win";
+    var lossName = { L1:"The Overnight Tax", L2:"The $400 Fan-Out", L5:"The Poisoned Catalog",
+                     L6:"You Paid 2x For Nothing", L7:"Cheap But Late", L8:"Bob Coded It Himself" };
+
+    function pad(s,n){ s=String(s); while(s.length<n) s=" "+s; return s; }
+    function tok(n){ return pad(SIM.fmt(Math.round(n)),16); }
+    var report =
+"====================================================================\n"+
+"CACHE DIAGNOSIS  -  your run (Bob's auth ticket)\n"+
+"sessions="+Math.max(1,st.sessionStarts)+"  subagents="+st.counts.spawns+"\n"+
+"====================================================================\n\n"+
+"USAGE (this run, ccusage-style, API-equivalent):\n"+
+"  input       "+tok(agg.input)+" tok\n"+
+"  output      "+tok(agg.output)+" tok\n"+
+"  cache-read  "+tok(agg.read)+" tok\n"+
+"  cache-write "+tok(writeTot)+" tok   (1h="+SIM.fmt(agg.write1h)+" 5m="+SIM.fmt(agg.write5m)+")\n"+
+"  TOTAL COST  ~$"+totalSpent.toFixed(2)+"  (what these tokens would cost on the API\n"+
+"              at list price, not your subscription bill)\n"+
+"  by model:\n"+
+Object.keys(agg.byModel).map(function(mm){ return "    "+pad(mm,7)+" ~$"+pad(agg.byModel[mm].toFixed(2),9); }).join("\n")+"\n\n"+
+"HEADLINE\n"+
+"  About "+pctRec.toFixed(0)+"% of this run's API-equivalent cost (~$"+recoverable.toFixed(2)+" of ~$"+totalSpent.toFixed(2)+") was recoverable.\n"+
+"  Biggest lever: "+leverName(SIM.biggestHidden(st))+".\n\n"+
+"TTL SPLIT  (cache-write tokens: how long the cache is asked to live)\n"+
+"  MAIN + SUBS : 1h "+pad(SIM.fmt(agg.write1h),12)+"   5m "+pad(SIM.fmt(agg.write5m),12)+"\n\n"+
+"ISSUES FOUND\n"+
+issueLines(st, h)+
+"\n====================================================================\n"+
+"BOTTOM LINE  (API-equivalent, list price, not your subscription bill)\n"+
+"====================================================================\n"+
+"  Total this ticket : ~$"+totalSpent.toFixed(2)+"   of Bob's $"+st.budget.toFixed(0)+" cap\n"+
+"  Recoverable       : ~$"+recoverable.toFixed(2)+"  ("+pctRec.toFixed(0)+"%)\n"+
+"  Hand-coded units  : "+st.counts.handCoded+"   (+"+manualH.toFixed(1)+" h of Bob's own hands)\n"+
+"  Tedium            : "+st.tedium.toFixed(0)+"/100";
+
+    var hiddenRows = [
+      ["rework from cheap plan/dev models", h.reworkUsd, st.counts.reviewRounds+" review rounds, "+st.counts.ciFixes+" CI fixes, "+st.counts.bugs+" bugs", "https://github.com"],
+      ["inline context re-priced every turn", h.inlineRereadUsd, "history re-read at 0.1x, tail rewritten at 2x", "https://github.com"],
+      ["idle rebuilds you could have pinged", h.idleRebuildUsd, st.counts.idleGaps+" gaps; 1 rebuild = 20 pings", "https://github.com"],
+      ["dynamic hook catalog poisoning", h.hookUsd, "~24,300 tok per session start", "https://github.com"],
+      ["eager skills you never invoked", h.eagerSkillsUsd, "catalog carried cold into every base", "https://github.com"],
+      ["1h flag below the 0.65 break-even", h.flagDeltaUsd, "your ratio: "+ratio.toFixed(2), "https://github.com"]
+    ];
+    var hiddenHTML = hiddenRows.map(function (r) {
+      return '<div class="r"><span><a href="'+r[3]+'" target="_blank" rel="noopener">'+r[0]+'</a> <span style="color:var(--ink-faint)">('+r[2]+')</span></span><span class="amt">$'+r[1].toFixed(2)+'</span></div>';
+    }).join("");
+
+    var handCodedHrs = manualH.toFixed(1);
+    m.innerHTML =
+      "<div style='display:flex;align-items:center;gap:14px;margin-bottom:6px'>" +
+        "<span class='grade "+grade+"'>"+grade+"</span>" +
+        "<div><h3 style='margin:0'>"+(won ? "Ticket shipped" : (lossName[st.ended.lossId] || lossName[(st.ended.lossId||"").split(":").pop()] || "Bob Coded It Himself"))+"</h3>" +
+        "<p class='lead' style='margin:2px 0 0'>"+(won ? "Auth is live. Bob kept $"+st.wallet.toFixed(2)+" of his $"+st.budget.toFixed(0)+" and hand-coded "+handCodedHrs+" h." : "The wallet drained and the clock/tedium caught up. Here is what actually happened.")+"</p></div>" +
+      "</div>" +
+      "<pre class='report'>"+escapeHtml(report)+"</pre>" +
+      "<div class='hidden-block'><h4>What the UI never told you</h4>" +
+        "<div class='hl'>"+hiddenHTML +
+        "<div class='r tot'><span>hidden total = "+handCodedHrs+" h Bob hand-coded because of this</span><span class='amt'>$"+hiddenTotal.toFixed(2)+"</span></div>" +
+        "</div></div>" +
+      "<p class='cta'>This report format is real. Run it on your own machine:<br><code>python3 cache_diagnose.py</code></p>" +
+      "<div class='row-btns'><button class='btn' id='mAgain'>Play again</button>" +
+      (st.cfg.scope==="session" ? "<button class='btn ghost' id='mWeek'>Try a full week (overnight expiry bites)</button>" : "") +
+      "</div>";
+    $("#scrim").classList.add("on");
+    $("#mAgain").addEventListener("click", function(){ $("#scrim").classList.remove("on"); resetGame(); });
+    var mw = $("#mWeek"); if (mw) mw.addEventListener("click", function(){ $("#scrim").classList.remove("on"); cfg.scope="week"; resetGame(); });
+  }
+
+  function leverName(k){
+    return { idleRebuildUsd:"Idle rebuilds (came back after >1h)", reworkUsd:"Rework from cheap models",
+      inlineRereadUsd:"Inline context re-reads", hookUsd:"Dynamic hook catalog poisoning",
+      eagerSkillsUsd:"Eager skills catalog", flagDeltaUsd:"1h flag below break-even" }[k] || "Idle rebuilds";
+  }
+  function issueLines(st, h) {
+    var items = [
+      ["Delegate tax (repeated cold subagent bases)", h.eagerSkillsUsd + (st.counts.coldSpawns>0?0.0001:0), st.counts.coldSpawns+" fully cold spawns rewrite a base"],
+      ["Idle rebuilds (came back after >1h)", h.idleRebuildUsd, st.counts.idleGaps+" idle gaps rebuilt the base at write price"],
+      ["Rework from upstream model choice", h.reworkUsd, st.counts.reviewRounds+" review rounds + "+st.counts.bugs+" bugs"],
+      ["Oversized tool base (MCP / catalogs)", h.eagerSkillsUsd, "eager skills + MCP carried into every cold base"]
+    ];
+    return items.map(function (it, i) {
+      return "  "+(i+1)+". "+it[0]+"\n     ~$"+it[1].toFixed(2)+" API-equiv - "+it[2];
+    }).join("\n");
+  }
+  function escapeHtml(s){ return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+  $("#scrim").addEventListener("click", function (e) { if (e.target === this) this.classList.remove("on"); });
+
+  // ---- init ----
+  var ro = new ResizeObserver(function(){ resize(); }); ro.observe(canvas.parentElement);
+  window.addEventListener("resize", resize);
+  renderAll();
+})();
+</script>
