@@ -1,0 +1,816 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Game Plan — Claude Code Cache Simulator (review draft)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root {
+  --bg: #ffffff;
+  --fg: #1a1a1a;
+  --muted: #5a5a5a;
+  --border: #d8d8d8;
+  --code-bg: #f3f3f3;
+  --link: #0056b3;
+  --banner-bg: #fff3cd;
+  --banner-fg: #7a5b00;
+  --banner-border: #f0d060;
+  --table-head-bg: #f0f0f0;
+  --table-stripe: #fafafa;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171a;
+    --fg: #e6e6e6;
+    --muted: #a0a0a0;
+    --border: #3a3f44;
+    --code-bg: #1f2428;
+    --link: #6fb3ff;
+    --banner-bg: #3a2f00;
+    --banner-fg: #ffd76a;
+    --banner-border: #6b5400;
+    --table-head-bg: #23282d;
+    --table-stripe: #1a1e22;
+  }
+}
+* { box-sizing: border-box; }
+html, body {
+  background: var(--bg);
+  color: var(--fg);
+}
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  line-height: 1.6;
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 1.5rem 1.25rem 5rem;
+}
+.banner {
+  background: var(--banner-bg);
+  color: var(--banner-fg);
+  border: 1px solid var(--banner-border);
+  border-radius: 6px;
+  padding: 0.6rem 1rem;
+  font-weight: 600;
+  font-size: 0.95rem;
+  margin-bottom: 1.5rem;
+  text-align: center;
+}
+h1, h2, h3, h4, h5, h6 {
+  line-height: 1.3;
+  scroll-margin-top: 1rem;
+}
+h1 { font-size: 1.7rem; margin-top: 0; }
+h2 { font-size: 1.35rem; margin-top: 2.2rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+h3 { font-size: 1.1rem; margin-top: 1.8rem; }
+h4 { font-size: 1rem; margin-top: 1.4rem; }
+p { margin: 0.8rem 0; }
+a { color: var(--link); }
+code {
+  background: var(--code-bg);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  font-size: 0.88em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+pre {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.9rem 1rem;
+  overflow-x: auto;
+}
+pre code {
+  background: none;
+  padding: 0;
+  font-size: 0.85em;
+}
+ul, ol { padding-left: 1.4rem; }
+li { margin: 0.25rem 0; }
+hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 2.5rem 0;
+}
+.table-wrap {
+  overflow-x: auto;
+  margin: 1rem 0;
+}
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.88rem;
+}
+th, td {
+  border: 1px solid var(--border);
+  padding: 0.45rem 0.6rem;
+  text-align: left;
+  vertical-align: top;
+}
+th {
+  background: var(--table-head-bg);
+  font-weight: 600;
+}
+tbody tr:nth-child(even) {
+  background: var(--table-stripe);
+}
+nav.toc {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.9rem 1.2rem;
+  margin: 1.5rem 0 2rem;
+  background: var(--code-bg);
+}
+nav.toc h2 {
+  font-size: 1rem;
+  margin: 0 0 0.5rem;
+  border: none;
+  padding: 0;
+}
+nav.toc ul {
+  list-style: none;
+  padding-left: 0;
+  margin: 0;
+  columns: 1;
+}
+nav.toc li { margin: 0.15rem 0; font-size: 0.9rem; }
+nav.toc .toc-l3 { padding-left: 1.2rem; font-size: 0.85rem; }
+nav.toc a { text-decoration: none; }
+nav.toc a:hover { text-decoration: underline; }
+footer {
+  margin-top: 3rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+</style>
+</head>
+<body>
+<div class="banner">DRAFT FOR REVIEW — design doc, not yet implemented.</div>
+<nav class="toc">
+<h2>Contents</h2>
+<ul>
+<li class="toc-l1"><a href="#gameplanmd-claude-code-cache-simulator-the-campaign-game">GAME_PLAN.md — Claude Code Cache Simulator: the Campaign Game</a></li>
+<li class="toc-l2"><a href="#a-game-overview-and-player-fantasy">A. Game overview and player fantasy</a></li>
+<li class="toc-l2"><a href="#b-screenstate-architecture">B. Screen/state architecture</a></li>
+<li class="toc-l3"><a href="#b1-screens-game-shell-state-machine">B.1 Screens (game shell state machine)</a></li>
+<li class="toc-l3"><a href="#b2-persistent-state">B.2 Persistent state</a></li>
+<li class="toc-l3"><a href="#b3-composition-with-the-existing-reducer">B.3 Composition with the existing reducer</a></li>
+<li class="toc-l2"><a href="#c-level-model-data-driven">C. Level model (data-driven)</a></li>
+<li class="toc-l3"><a href="#c1-leveldef-extension">C.1 LevelDef extension</a></li>
+<li class="toc-l3"><a href="#c2-progressive-disclosure-rule-computed-not-hand-listed-per-level">C.2 Progressive disclosure rule (computed, not hand-listed per level)</a></li>
+<li class="toc-l3"><a href="#c3-learnbeat">C.3 LearnBeat</a></li>
+<li class="toc-l2"><a href="#d-the-13-levels-fully-specified">D. The 13 levels, fully specified</a></li>
+<li class="toc-l3"><a href="#tier-1-personal-help-bob-session-scope">Tier 1 — PERSONAL ("Help Bob", session scope)</a></li>
+<li class="toc-l3"><a href="#tier-2-team-lead-week-scope">Tier 2 — TEAM LEAD (week scope)</a></li>
+<li class="toc-l3"><a href="#tier-3-budget-manager-month-scope">Tier 3 — BUDGET MANAGER (month scope)</a></li>
+<li class="toc-l2"><a href="#e-the-play-experience-what-pressing-play-actually-does">E. The play experience (what pressing Play actually does)</a></li>
+<li class="toc-l3"><a href="#e1-layout-play-screen">E.1 Layout (play screen)</a></li>
+<li class="toc-l3"><a href="#e2-result-computation-and-display">E.2 Result computation and display</a></li>
+<li class="toc-l3"><a href="#e3-step-auto-run-speed-semantics">E.3 Step / Auto-run / Speed semantics</a></li>
+<li class="toc-l2"><a href="#f-config-controls-catalog-controlid-stable-ids">F. Config controls catalog (ControlId — stable ids)</a></li>
+<li class="toc-l2"><a href="#g-implementation-work-breakdown-sonnet-slices">G. Implementation work breakdown (sonnet slices)</a></li>
+<li class="toc-l2"><a href="#h-risks-open-questions-conflicts">H. Risks / open questions / conflicts</a></li>
+<li class="toc-l2"><a href="#i-grounding-matrix-level-mechanic-raw-evidence-constant-playbook-lever">I. Grounding matrix — level mechanic → raw evidence → constant → playbook lever</a></li>
+</ul>
+</nav>
+<h1 id="gameplanmd-claude-code-cache-simulator-the-campaign-game">GAME_PLAN.md — Claude Code Cache Simulator: the Campaign Game</h1>
+<p>Version 1.0 — 2026-08-08. Design doc for the level-based campaign game built on the existing <code>/Users/user/claude-code-cache-sim</code> codebase. Decision-complete: sonnet implementers execute this without further design calls. Every number cites SIMULATOR_SPEC.md Section 2 (C1..C32) or <code>src/engine/constants.ts</code>. Nothing here changes the engine's economics; the campaign is a shell over the existing pure reducer, exactly as SIMULATOR_SPEC.md Section 11 requires ("a layer over the existing engine, not a fork").</p>
+<p>Ground truth (binding, in priority order on conflict):</p>
+<ol>
+<li><code>/Users/user/claude-code-cache-sim/src/engine/constants.ts</code> — canonical numbers as implemented.</li>
+<li><code>/Users/user/claude-cache-findings/build/SIMULATOR_SPEC.md</code> — Sections 8.0 (hidden costs), 11 (campaign).</li>
+<li><code>/Users/user/claude-cache-findings/build/SESSION_PROFILE.md</code> — session realism.</li>
+<li><code>/Users/user/claude-cache-findings/build/LEVEL_EXPLANATIONS.md</code> — per-level lesson intent (copy pending review).</li>
+</ul>
+<p>Global constraints (apply to every work slice in Section G):</p>
+<ul>
+<li>The 62 existing vitest tests stay green. New behavior gets new tests; existing tests are only</li>
+</ul>
+<p>touched if a spec-mandated gate correction requires it (each such touch is flagged in G).</p>
+<ul>
+<li>Engine files (<code>src/engine/*</code>) are read-only for this project except where G explicitly says otherwise.</li>
+<li>Deterministic: no <code>Date.now</code>/<code>Math.random</code> inside game logic; PRNG only via the existing xorshift.</li>
+<li>Function over form: plain DOM + the existing TapeRenderer. No new art assets, no animation</li>
+</ul>
+<p>libraries. ncase-grade polish is a later phase.</p>
+<ul>
+<li>Single-file offline build stays clean (<code>vite build</code> output self-contained, no external requests).</li>
+</ul>
+<hr>
+<h2 id="a-game-overview-and-player-fantasy">A. Game overview and player fantasy</h2>
+<p><strong>Who you are.</strong> Tier 1 (L1–L6): you are Bob, one developer running Claude Code inside a single ~5-hour session, learning one knob at a time. Tier 2 (L7–L11): Bob is now a team lead running a week — three tickets, coffee breaks, overnights; time and cache TTLs become the enemy. Tier 3 (L12–L13): you are the budget manager for a 5-dev fleet over a month; you set policy weekly, not per turn, and finally you read a real-format diagnose report and execute the recovery.</p>
+<p><strong>Core loop (one paragraph).</strong> From the level map you enter a level. A short LEARN beat replays a scripted ledger twice — without and with the level's one new tool — showing the dollar delta (the only place teaching chips are allowed, per spec 8.0's ladder exception). Then PLAY: the config strip shows only the controls unlocked so far plus this level's new one; you set your loadout, then step the SDLC unit queue — each Run Next visibly emits priced requests onto the tape, the wallet drains, compaction/rebuild badges fire, idle gaps interrupt. At queue end (or death) the GATE is judged purely from <code>state.ledger</code>/<code>state.hidden</code>/<code>state.idleLog</code>: pass earns 1–3 stars and unlocks the next level (which reveals exactly one more control); fail routes to a mini-report naming the hidden bucket that killed you, with one citation and a Retry button.</p>
+<p><strong>One sentence per tier.</strong></p>
+<ul>
+<li>Tier 1: "Every token is read, written, or generated — and the multipliers (0.1x / 1.25x / 2x / 5x, C1) decide everything."</li>
+<li>Tier 2: "The cache is a clock: TTLs, idle gaps, and session starts are where real money leaks ($575/mo idle, C14)."</li>
+<li>Tier 3: "At fleet scale you cannot micromanage — you rank the levers by dollars (C17 ordering) and set policy."</li>
+</ul>
+<hr>
+<h2 id="b-screenstate-architecture">B. Screen/state architecture</h2>
+<h3 id="b1-screens-game-shell-state-machine">B.1 Screens (game shell state machine)</h3>
+<pre><code>// src/game/shell.ts (NEW)
+type Screen =
+  | { id: &quot;map&quot; }                                        // level map + stars + tier framing
+  | { id: &quot;learn&quot;; level: LevelId }                      // LEARN beat (skippable after 1st view)
+  | { id: &quot;play&quot;;  level: LevelId }                      // interactive sim, gated config strip
+  | { id: &quot;result&quot;; level: LevelId; outcome: LevelOutcome } // pass/fail + stars + mini-report
+  | { id: &quot;freeplay&quot;; toolset: ToolId[] };               // sandbox with current unlocked toolset
+
+interface LevelOutcome {
+  pass: boolean; stars: 0|1|2|3; reason: string;
+  spentUsd: number; handCoded: number;
+  finalState: GameState;            // for the report modal / mini-report
+}</code></pre>
+<p>Transitions (explicit; no others exist):</p>
+<div class="table-wrap"><table>
+<thead><tr><th>From</th><th>Event</th><th>To</th></tr></thead>
+<tbody>
+<tr><td>map</td><td>click unlocked level</td><td>learn(level) — or play(level) if <code>levels[id].attempts &gt; 0</code> and player clicks "Skip intro"</td></tr>
+<tr><td>map</td><td>click "Free Play" (visible once ≥1 level cleared)</td><td>freeplay(current unlocked toolset)</td></tr>
+<tr><td>learn</td><td>"Start level" / auto after replay ends</td><td>play(level)</td></tr>
+<tr><td>learn</td><td>"Back"</td><td>map</td></tr>
+<tr><td>play</td><td><code>st.ended !== null</code> OR player clicks "Finish" when queue empty</td><td>result(level, judge(level, st))</td></tr>
+<tr><td>play</td><td>"Abandon"</td><td>map (attempt counted, no star change)</td></tr>
+<tr><td>result</td><td>pass and next level exists</td><td>map (next level newly unlocked, brief highlight)</td></tr>
+<tr><td>result</td><td>"Retry"</td><td>learn(level) with "Skip intro" preselected → play(level)</td></tr>
+<tr><td>result</td><td>after L13 pass</td><td>map with Sandbox tile unlocked</td></tr>
+<tr><td>freeplay</td><td>"Back to map"</td><td>map</td></tr>
+</tbody></table></div>
+<p>The shell is a Svelte 5 <code>$state</code> object in a new <code>src/game/shell.ts</code> (pure helpers) + <code>src/App.svelte</code> rewritten as a screen router. The existing sandbox UI in App.svelte (ConfigStrip + UnitBoard + tape + ReportModal) becomes the body of the <code>play</code> and <code>freeplay</code> screens — moved into a new <code>src/components/PlayScreen.svelte</code>, not duplicated.</p>
+<h3 id="b2-persistent-state">B.2 Persistent state</h3>
+<p><code>CampaignState</code> (already defined in <code>src/game/levels.ts</code>) is the only persisted object.</p>
+<ul>
+<li>Key: <code>localStorage["cc-sim-campaign"]</code>, versioned <code>{ v: 1, ...CampaignState }</code> per spec 11.2.</li>
+<li>Save on every <code>completeLevel</code>; load on boot; corrupt/missing → <code>newCampaign()</code>.</li>
+<li>Per-run replay save (<code>SaveFile</code> in game/types.ts) is NOT persisted in v1 (kept for tests only).</li>
+</ul>
+<h3 id="b3-composition-with-the-existing-reducer">B.3 Composition with the existing reducer</h3>
+<p>The play screen owns a <code>GameState</code> created by <code>initGame(level.seed, level.scope, level.cfgOverride)</code> and advances it exclusively through the existing <code>step()</code>. The shell never mutates GameState. Judging calls <code>level.pass(st)</code> + <code>starsFor(level, st, handCoded)</code> + <code>completeLevel(...)</code> — all already implemented in levels.ts. The only levels.ts changes are the field additions and gate tightenings specified in C/D below.</p>
+<hr>
+<h2 id="c-level-model-data-driven">C. Level model (data-driven)</h2>
+<h3 id="c1-leveldef-extension">C.1 LevelDef extension</h3>
+<p><code>LevelDef</code> in <code>src/game/levels.ts</code> gains these fields (existing fields keep their names/values unless a row in D says otherwise):</p>
+<pre><code>export interface LevelDef {
+  id: LevelId;
+  tier: 1 | 2 | 3;
+  title: string;
+  objective: string;              // NEW: one-sentence player-facing goal shown on entry and in HUD
+  unlocks: ToolId;                // exists — the ONE tool this level introduces
+  introducedControls: ControlId[];// NEW: exact config-strip control ids this level reveals (see F)
+  teaches: string;
+  scope: Scope;
+  seed: number;
+  budgetUsd: number;
+  clockCapMin?: number;           // NEW: optional override of endMin (defaults to scope days x 300)
+  cfgOverride: Partial&lt;Config&gt;;   // scenario starting config
+  cfgLocked?: (keyof Config)[];   // NEW: fields the player may NOT change this level (scenario constraints)
+  learn: LearnBeat;               // NEW: the scripted LEARN replay (C.3)
+  pass(st: GameState): { pass: boolean; reason: string };
+  star2(st: GameState): boolean;  // NEW: default = spent &lt;= 0.85*budget (spec 11.2); override where D says
+  star3(st: GameState): boolean;  // NEW: default = spent &lt;= 0.70*budget &amp;&amp; handCoded === 0
+  referenceCfg: Partial&lt;Config&gt;;  // NEW: the scripted reference solution config (boot-asserted to pass 3-star, invariant 11)
+  antiCfg: Partial&lt;Config&gt;;       // NEW: the designated anti-pattern config (boot-asserted to FAIL)
+  failLesson: { bucket: keyof HiddenCosts | &quot;none&quot;; cite: string; line: string }; // NEW: mini-report content
+}</code></pre>
+<p><code>star2</code>/<code>star3</code> default implementations live in levels.ts so most levels omit them; <code>handCoded</code> is read from <code>st.counts.handCoded</code> (drop the separate parameter on <code>starsFor</code> in favor of reading counts — one-line change, update levels.test.ts accordingly).</p>
+<h3 id="c2-progressive-disclosure-rule-computed-not-hand-listed-per-level">C.2 Progressive disclosure rule (computed, not hand-listed per level)</h3>
+<pre><code>// src/game/shell.ts
+export function unlockedControls(campaign: CampaignState, current: LevelId): ControlId[] {
+  const idx = LEVEL_ORDER.indexOf(current);
+  return LEVELS.slice(0, idx + 1).flatMap(l =&gt; l.introducedControls);
+}</code></pre>
+<ul>
+<li>The config strip renders ONLY controls in this list. Locked groups are ABSENT, not greyed</li>
+</ul>
+<p>(spec 11.1: "the player cannot see tools they have not earned"). A group header renders only if it has ≥1 visible control.</p>
+<ul>
+<li><code>cfgLocked</code> fields render but are disabled with the scenario value (used only where the</li>
+</ul>
+<p>scenario forces a value, e.g. L5 forces <code>who: "subagent"</code>).</p>
+<ul>
+<li>Free Play uses <code>unlockedControls(campaign, lastUnlockedLevel)</code>; post-L13 Sandbox = everything</li>
+</ul>
+<p>plus scope/seed controls.</p>
+<ul>
+<li>L1 shows zero controls: the strip collapses to just the RUN group (Run next unit button).</li>
+</ul>
+<p>"Bob codes it by hand" first appears in L2 (it is meaningless in L1 where the budget is infinite).</p>
+<h3 id="c3-learnbeat">C.3 LearnBeat</h3>
+<pre><code>interface LearnBeat {
+  copy: string[];                 // 2-4 short lines from LEVEL_EXPLANATIONS.md (final wording pending review)
+  withoutCfg: Partial&lt;Config&gt;;    // run A config (the trap)
+  withCfg: Partial&lt;Config&gt;;       // run B config (the tool used right)
+  scope: Scope; seed: number;     // usually the level&#x27;s own seed
+  chip(a: GameState, b: GameState): string; // teaching chip text, e.g. &quot;same work: $4.61 vs $1.38&quot;
+}</code></pre>
+<p>Implementation: <code>runScript(seed, scope, withoutCfg, true)</code> and <code>runScript(..., withCfg, true)</code> (forceRun=true so the comparison is economic, not truncated by hand-coding), then render both ledgers as two stacked tapes via the existing <code>TapeRenderer</code> (one instance each), with the chip under them. This reuses <code>runScript</code> verbatim — no new engine code. The chip is allowed here and ONLY here (spec 8.0 LEARN exception); it must not appear on the play screen.</p>
+<hr>
+<h2 id="d-the-13-levels-fully-specified">D. The 13 levels, fully specified</h2>
+<p>Conventions: budgets/gates are transcribed from SIMULATOR_SPEC.md 11.3 verbatim; "spent" = <code>totalSpent(st)</code>. Reference/anti configs are boot-asserted (invariant 11; see slice G8). Where the current <code>levels.ts</code> predicate is weaker than 11.3, the row below is the required predicate and levels.ts must be updated (flagged per row). All levels use <code>DEFAULT_CFG</code> (deliberately-bad defaults) merged with <code>cfgOverride</code>. Star rules are the C.1 defaults unless stated.</p>
+<h3 id="tier-1-personal-help-bob-session-scope">Tier 1 — PERSONAL ("Help Bob", session scope)</h3>
+<p><strong>L1 — Hello, Cache</strong> (tier 1, scope session, seed 1, budget ∞)</p>
+<ul>
+<li>Introduces: nothing (<code>introducedControls: ["run"]</code> — the Run button itself).</li>
+<li>Scenario: the standard single-ticket queue; the player just presses Run Next through it and</li>
+</ul>
+<p>watches the tape. All config hidden and fixed at a known-good loadout (<code>cfgOverride: { who:"inline", hook:"static", skillsMode:"invoke", skills:10, memoryFiles:0 }</code>) so the tape shows a clean cold-write-then-blue-reads pattern.</p>
+<ul>
+<li>Objective: "Run the ticket. Watch what blue (read, 0.1x) and red (write) cost."</li>
+<li>PASS (as implemented): read-token share of read+write ≥ 80%. Cannot practically fail; the gate</li>
+</ul>
+<p>forces watching the sweep. Stars: pass = 1★ fixed (budget ∞ ⇒ starsFor already caps at 1; keep).</p>
+<ul>
+<li>LEARN: same 3 warm turns replayed cold vs warm; chip: "cold cost ~20x warm (C5: w1h 2x vs read 0.1x)".</li>
+<li>Aha: reads are nearly free; the write stripe is the money.</li>
+<li>levels.ts change: none to the predicate; add new fields.</li>
+</ul>
+<p><strong>L2 — Pick Your Fighter</strong> (tier 1, session, seed 2, budget $2.00)</p>
+<ul>
+<li>Introduces: <code>devModel</code>.</li>
+<li>Scenario: DEV-heavy slice — <code>cfgOverride</code> trims the queue to PLAN + DEV wave only via a new</li>
+</ul>
+<p>scenario knob (see G4: <code>scenario: "dev-only"</code> truncates unitDefs to [PLAN, DEV]). Spec 11.3 says "2 DEV units"; with N_DEV=3 per wave the mock's wave stands in for it — the budget $2.00 is re-anchored by the reference run (see [ESTIMATE] in H if the reference lands outside spec's $1.40/$4.60; the boot assertion is the arbiter).</p>
+<ul>
+<li>PASS: spent ≤ $2.00 AND <code>st.counts.spawns &gt; 0</code> (deliberate run happened) AND the ledger shows a</li>
+</ul>
+<p>non-default devModel was exercised OR sonnet retained deliberately — implement as: at least one SET_CFG action occurred before the DEV wave (tracked by a new <code>st.counts.cfgTouches</code> counter, incremented in the SET_CFG reducer branch). Current levels.ts lacks the touch check; add it.</p>
+<ul>
+<li>Fail lesson: bucket "none", loss screen <code>FABLE_BLEED</code> style: "Output is 5x (C4: fable $50/M out)".</li>
+<li>Reference: <code>{ devModel: "sonnet" }</code>. Anti: <code>{ devModel: "fable" }</code>.</li>
+<li>Aha: "cheap model" ≠ "cheap output"; output tokens at 5x dominate DEV cost (C28 WORK_OUT=44,000).</li>
+</ul>
+<p><strong>L3 — The Planner's Paradox</strong> (tier 1, session, seed 3, budget $6.50)</p>
+<ul>
+<li>Introduces: <code>planModel</code>.</li>
+<li>Scenario: full single ticket (PLAN + DEV×wave + review loop + rest). <code>buildQueue</code> already</li>
+</ul>
+<p>expands review rounds from PLAN_Q/DEV_Q — no new mechanics.</p>
+<ul>
+<li>PASS (as implemented, matches 11.3): spent ≤ $6.50 AND <code>st.counts.reviewRounds ≤ 1</code>.</li>
+<li>Reference: <code>{ planModel: "fable", devModel: "sonnet" }</code> (spec's fable-plan ≈ $5.20, ~1.2 rounds).</li>
+</ul>
+<p>Anti: <code>{ planModel: "sonnet" }</code> (≈$8+, ~2 rounds). NOTE the inversion is deliberate spec fiction: PLAN_Q sonnet=1.6 means MORE rework (constants.ts comment: "higher = better" is quality-inverted in buildQueue's <code>q = 0.8/(devQ²·planQ)</code>) — see H.3.</p>
+<ul>
+<li>Fail lesson: bucket <code>reworkUsd</code>, cite Section 3.4: "rework attributable to plan model: $X".</li>
+<li>Aha: the cheap-looking plan bill hides $10–20 of review/CI cycles.</li>
+</ul>
+<p><strong>L4 — Send in the Clones</strong> (tier 1, session, seed 4, budget $5.00)</p>
+<ul>
+<li>Introduces: <code>who</code> (inline vs subagent).</li>
+<li>Scenario: <code>scenario: "dev-marathon"</code> — 2 consecutive DEV waves (6 DEV units total per 11.3)</li>
+</ul>
+<p>plus CODE_REVIEW, no further tail (G4 scenario knob).</p>
+<ul>
+<li>PASS: spent ≤ $5.00 AND final main-cache prefix &lt; 90,000 tok (11.3's "main-context final size</li>
+</ul>
+<p>&lt; 90k"): predicate reads <code>st.cache.entries["main"]?.prefixTok ?? 0 &lt; 90000</code>. Current levels.ts checks budget only; ADD the prefix check.</p>
+<ul>
+<li>Reference: <code>{ who: "subagent", prompts: "identical" }</code>. Anti: <code>{ who: "inline" }</code>.</li>
+<li>Fail lesson: bucket = larger of <code>inlineRereadUsd</code> / cold-spawn cost; cite C29 (INLINE_GROWTH</li>
+</ul>
+<p>22,000/turn) vs C10 (BASE_IDENTICAL 26,237).</p>
+<ul>
+<li>Number resolution (H.1): the level copy uses 26,237 (C10 canonical), never "~34k".</li>
+<li>Aha: inline re-prices the whole history every turn; a subagent pays one bounded cold base.</li>
+</ul>
+<p><strong>L5 — One Word Costs 14.6k</strong> (tier 1, session, seed 5, budget $6.00)</p>
+<ul>
+<li>Introduces: <code>prompts</code> (identical/pointer/varied). <code>cfgOverride: { who: "subagent" }</code>,</li>
+</ul>
+<p><code>cfgLocked: ["who"]</code>.</p>
+<ul>
+<li>Scenario: <code>scenario: "fanout8"</code> — one 8-task DEV fan-out (the canonical Fan-Out; needs the G4</li>
+</ul>
+<p>scenario knob to set the wave size to 8 instead of N_DEV=3).</p>
+<ul>
+<li>PASS (as implemented, matches 11.3): spent ≤ $6.00 AND total subagent cache-write ≤ 35,000 tok.</li>
+</ul>
+<p>(Identical ≈ 26,237 + growth; varied ≈ 26,237 + 7×14,623 ≈ 128k — varied cannot pass. C10/C11.)</p>
+<ul>
+<li>Pointer strategy: engine currently treats pointer as identical (spec: identical ledger +500 tok</li>
+</ul>
+<p>workIn [FICTION delta]). v1: <code>prompts</code> select shows identical/varied only until pointer's +500 is wired (G4 optional; see H.4).</p>
+<ul>
+<li>Reference: <code>{ prompts: "identical" }</code>. Anti: <code>{ prompts: "varied" }</code>.</li>
+<li>Aha: a wording habit, not a real cost, decides pass/fail (VAR_W=14,623 / VAR_R=11,602).</li>
+</ul>
+<p><strong>L6 — The Five-Minute Window</strong> (tier 1, session, seed 6, budget $6.00)</p>
+<ul>
+<li>Introduces: <code>width</code> (1–8). <code>cfgOverride: { who: "subagent", prompts: "identical" }</code>, lock <code>who</code>.</li>
+<li>Scenario: <code>scenario: "fanout8-slow"</code> — the 8-task fan-out where the seed injects one slow</li>
+</ul>
+<p>6-minute unit mid-run (G4: at spawn index 4, the spawn's clock offset is +6 min instead of +90 s, pushing later spawns past the 5m TTL when width is narrow). Wave warmth follows the engine's existing WARM_WAVES=3 logic (C27).</p>
+<ul>
+<li>PASS (as implemented, matches 11.3): spent ≤ $6.00 AND cold-base ledger rows ≤ 2.</li>
+<li>Reference: <code>{ width: 8 }</code> (1 cold). Anti: <code>{ width: 2 }</code> (4 colds with the slow agent).</li>
+<li>Fail lesson: "wave 4 came back to a dead cache — 5 minutes had passed" (C27).</li>
+<li>Aha: going narrow "to be careful" is the expensive choice under a 5m TTL.</li>
+</ul>
+<h3 id="tier-2-team-lead-week-scope">Tier 2 — TEAM LEAD (week scope)</h3>
+<p><strong>L7 — The Coffee Break</strong> (tier 2, week, seed 7, budget $8.00)</p>
+<ul>
+<li>Introduces: <code>keepWarm</code> + <code>keepWarmMin</code> + the step-away idle modal (Section 4 params 6+11).</li>
+<li>Scenario: <code>scenario: "gaps"</code> — a single day+overnight with three SCRIPTED gaps: 25 min, 75 min,</li>
+</ul>
+<p>overnight 720 min (replaces the generic <code>idleBefore</code> schedule for this level; G4). The idle modal (Section 4.11) appears at each gap when keepWarm is off: "let it die" / "come back sooner (trap: −nothing, gains nothing)". Keep-warm toggling is allowed between units (SET_CFG), so the player can ping the short gaps and disable before the overnight.</p>
+<ul>
+<li>PASS (as implemented, matches 11.3): spent ≤ $8.00 AND ≥2 gaps pinged AND the overnight</li>
+</ul>
+<p>(gapMin &gt; 480) NOT pinged. Requires <code>applyGap</code> to log <code>pinged</code> into <code>st.idleLog</code> — current step.ts does NOT populate idleLog; ADD it (G3).</p>
+<ul>
+<li>Reference: keepWarm on for gaps 1–2, off for the overnight (reference action script toggles it).</li>
+</ul>
+<p>Anti: keepWarm on throughout (pings the 12 h gap past the C19 ~20 h... no — pinging 720 min at 50-min interval = 14 pings; break-even for the 1h tier is 20 h so a 12 h gap ping actually wins economically; the gate teaches the RULE with the spec's framing — see H.5 for this tension and the resolution: the overnight gap is set to 1,320 min (22 h), past the 20 h break-even, so "don't ping the overnight" is economically true, not just decreed).</p>
+<ul>
+<li>Fail lesson: L1 <code>IDLE_BURN</code>, "The Overnight Tax" (C13/C14: 272 rebuilds, $575/mo).</li>
+<li>Aha: 1 rebuild = 20 pings (C5); but pinging past ~20 h (C19) loses too.</li>
+</ul>
+<p><strong>L8 — The Long Cache</strong> (tier 2, week, seed 8, budget $14.00 combined)</p>
+<ul>
+<li>Introduces: <code>oneHourFlag</code>.</li>
+<li>Scenario: <code>scenario: "two-halves"</code> — two half-week blocks run back-to-back in one GameState.</li>
+</ul>
+<p>Half A is rebuild-light (few idle gaps; engineered cold/base ratio ≈ 0.28), half B rebuild-heavy (dense gaps; ratio ≈ 0.74). A banner marks the half boundary; SET_CFG is allowed there. Engineering: half A = 6 units, no gaps; half B = 6 units with a &gt;5-min gap before each subagent wave (kills 5m caches, spares 1h). Ratios are asserted at boot from the reference ledgers.</p>
+<ul>
+<li>PASS: flag OFF during half A and ON during half B — checked from LEDGER WRITE TIERS, not config</li>
+</ul>
+<p>(spec 11.6): every subagent write row in half A has <code>writeTier === "5m"</code> and half B rows are <code>"1h"</code>; AND combined spent ≤ $14.00. Current levels.ts checks budget only; REPLACE the predicate. Half membership = <code>tMin &lt; halfBoundaryMin</code> (boundary stored on the scenario, exposed via a <code>st.marks: Record&lt;string, number&gt;</code> addition — G3).</p>
+<ul>
+<li>Reference: toggle at the boundary. Anti: flag ON throughout (loss L6 <code>WRONG_FLAG</code>, ratio 0.28,</li>
+</ul>
+<p>C21 break-even 0.65 — <code>ONEHOUR_BREAKEVEN</code> in constants.ts).</p>
+<ul>
+<li>Aha: the flag is a bet on your rebuild ratio, not a buff; measure before you flip.</li>
+</ul>
+<p><strong>L9 — The Poisoned Catalog</strong> (tier 2, week, seed 9, budget $16.00)</p>
+<ul>
+<li>Introduces: <code>hook</code> (none/static/dynamic). <code>cfgOverride: { hook: "dynamic" }</code> (the real machine's default).</li>
+<li>Scenario: <code>scenario: "week7starts"</code> — 5-day week forcing 7 session starts (overnights + two</li>
+</ul>
+<p>mid-day &gt;8 h gaps; G4). Each dynamic-hook session start accrues HOOK_POISON=24,300 tok of lost write (C23) via the existing <code>st.hidden.hookUsd</code> accrual in step.ts.</p>
+<ul>
+<li>PASS: spent ≤ $16.00 AND average session-start write &lt; 6,000 tok. Implement the second clause</li>
+</ul>
+<p>from the ledger: mean <code>writeTok</code> of the first main row after each session start (rows where a new session began — step.ts must tag rows with <code>sessionStart: boolean</code>; G3). Current levels.ts checks budget only; REPLACE.</p>
+<ul>
+<li>Reference: <code>{ hook: "static" }</code> set before day 2. Anti: leave dynamic (loss L5 <code>CATALOG_POISON</code>).</li>
+<li>Aha: one changing early line makes the whole catalog unreusable — a config change, not a</li>
+</ul>
+<p>behavior change, saves ~7 × 24.3k tokens/week.</p>
+<p><strong>L10 — Loadout Discipline</strong> (tier 2, week, seed 10, budget $12.00)</p>
+<ul>
+<li>Introduces: <code>skills</code> slider + <code>skillsMode</code> toggle + <code>memoryFiles</code> (params 8+9 — one level, three</li>
+</ul>
+<p>controls, per spec "Unlocks 8 + 9"). <code>cfgOverride: { skills:150, skillsMode:"eager", memoryFiles:10 }</code>.</p>
+<ul>
+<li>Scenario: <code>scenario: "spawn12"</code> — week with 12 subagent spawns (4 DEV waves of 3).</li>
+<li>PASS: spent ≤ $12.00 AND <code>subBaseTok(st.cfg)</code> at end ≤ 22,000 AND ≥1 skill actually triggered.</li>
+</ul>
+<p>Skill triggers do not exist in step.ts yet: ADD a PRNG roll p=0.15/unit ([FICTION], Section 4.8) that, when invoke-mode, adds SKILL_BODY_TOK (~1,700, constants.ts) fresh input to that unit's request and increments <code>st.counts.skillTriggers</code> (G3). Gate reads the count. Current levels.ts checks budget only; REPLACE. (subBaseTok is config-derived; spec 11.6 forbids config-only gates, so ALSO require ≥1 cold subagent write row ≤ 22,000 tok in the ledger — demonstrated behavior.)</p>
+<ul>
+<li>Reference: <code>{ skillsMode:"invoke", skills: 10, memoryFiles: 3 }</code> (≈20.5k base per 11.3).</li>
+</ul>
+<p>Anti: unchanged defaults.</p>
+<ul>
+<li>Aha: 13,083 tok of catalog (C7 — a machine-specific SessionStart hook block, per</li>
+</ul>
+<p>LEVEL_EXPLANATIONS.md note) rides cold into every one of 12 bases; invoke-only ≈ 0 until used.</p>
+<p><strong>L11 — Trim the Fat</strong> (tier 2, week, seed 11, budget $11.00)</p>
+<ul>
+<li>Introduces: <code>mcp</code> (4 checkboxes with neutral schema-size labels 6,295/4,000/3,000/3,000 —</li>
+</ul>
+<p>MCP_SIZES in constants.ts, C24).</p>
+<ul>
+<li>Scenario: <code>scenario: "mcp-required"</code> — 3 tickets, each REQUIRING one specific server: running a</li>
+</ul>
+<p>ticket's DEV wave with its required server disabled fails that unit (it re-queues as blocked with a neutral message "tool unavailable: &lt;server&gt;"; the player must re-enable). Judgment, not purge (spec 11.3). Requirement map fixed by seed: ticket 1→server 0, 2→server 1, 3→server 2; server 3 is never needed.</p>
+<ul>
+<li>PASS: all tickets shipped AND tool base ≤ 8,000 tok on ≥80% of requests. Tool base per request =</li>
+</ul>
+<p><code>TOOLS_BASE * mcpShare(cfg.mcp)</code> at emit time; step.ts tags each row with <code>toolBaseTok</code> (G3). Current levels.ts checks budget only; REPLACE (budget ≤ $11.00 stays as the outcome half).</p>
+<ul>
+<li>Reference: enable exactly the required server per ticket (toggling between tickets).</li>
+</ul>
+<p>Anti: all four on (16,295 tok riding every cold write — diag issue 4).</p>
+<ul>
+<li>Aha: schemas ride EVERY cold base, main and spawn; trimming is the highest universal leverage.</li>
+</ul>
+<h3 id="tier-3-budget-manager-month-scope">Tier 3 — BUDGET MANAGER (month scope)</h3>
+<p><strong>L12 — The Budget Manager</strong> (tier 3, month, seed 12, fleet target $300)</p>
+<ul>
+<li>Introduces: <code>fleet</code> view — no new config control; ALL 11 params now render, applied as org</li>
+</ul>
+<p>policy + per-dev overrides.</p>
+<ul>
+<li>Scenario: 5 concurrent <code>GameState</code>s (one per fictional dev), each seeded <code>seed*10+devIdx</code>, each</li>
+</ul>
+<p>initialized with one bad-habit cfgOverride (the five loss archetypes, spec 11.3): dev0 <code>{devModel:"fable"}</code>, dev1 <code>{who:"inline"}</code>, dev2 <code>{prompts:"varied"}</code>, dev3 <code>{hook:"dynamic"}</code>, dev4 <code>{keepWarm:false}</code> + extra scripted gaps. Driver: round-robin auto-runner — each "week" (4 auto-run blocks), the player edits policy (a Partial&lt;Config&gt; applied to all devs) and optional per-dev overrides, then presses "Run week"; the driver steps each sim through its week's units using canAfford-else-handCode (the existing <code>runScript</code> inner loop, extracted as <code>autoRunWeek(st)</code> in G6). No engine changes — <code>step</code> is pure.</p>
+<ul>
+<li>PASS: Σ spent across 5 devs ≤ $300 AND 5/5 queues completed within the month clock AND total</li>
+</ul>
+<p>hand-coded hours &lt; 10. Fleet baseline "last month: $450" is displayed as fiction anchored by the anti run (boot-asserted to land ≥ $400; [ESTIMATE] until calibrated — H.6).</p>
+<ul>
+<li>Reference: week-1 policy = the good loadout (identical/subagent/static/invoke/1-MCP/keep-warm),</li>
+</ul>
+<p>per-dev override fixing each archetype. Anti: no policy edits.</p>
+<ul>
+<li>Fail: per-dev loss screens (each dev's dominant bucket) + rollup.</li>
+<li>Aha: you manage by policy and triage, not per-turn control.</li>
+</ul>
+<p><strong>L13 — The Audit</strong> (capstone; tier 3, month, seed 13, target from the report)</p>
+<ul>
+<li>Introduces: <code>audit</code> — the diagnose report as an INPUT (read-first gameplay).</li>
+<li>Phase 1 (new mini-screen inside play): the player receives a Section 7 pastiche of a messy</li>
+</ul>
+<p>fleet month (generated by running the L12 anti-fleet headlessly at seed 13, then rendered with the existing report.ts formatter). Four issues with dollar figures in the C17 shape (idle ≫ delegate &gt; 5m-band &gt; MCP). The player DRAGS/SELECTS a ranking of the 4 levers. Ranking must match the report's dollar order to proceed (retries allowed, attempts counted).</p>
+<ul>
+<li>Phase 2: run the same fleet month (L12 driver) applying fixes.</li>
+<li>PASS: ranking correct AND recovered ≥ 70% of the report's Recoverable figure. Recovered =</li>
+</ul>
+<p>reportRecoverableUsd − Σ residual <code>st.hidden</code> buckets across the fleet (mapping: idle→ idleRebuildUsd, delegate→cold-spawn cost, 5m-band→flagDeltaUsd, MCP→toolBase overage; the report generator writes the four claimed figures into the level state so the gate compares like-for-like). Current levels.ts predicate is budget-only; REPLACE.</p>
+<ul>
+<li>Fail lesson: "the report told you idle was $575 of $692 — you fixed MCP first" (C17).</li>
+<li>Aha: the game becomes the real workflow; the CTA offers <code>python3 cache_diagnose.py</code>.</li>
+</ul>
+<p>Post-campaign: Sandbox tile on the map = current freeplay screen with all controls + scope/seed + deliberately-bad defaults restored + report always shown.</p>
+<hr>
+<h2 id="e-the-play-experience-what-pressing-play-actually-does">E. The play experience (what pressing Play actually does)</h2>
+<h3 id="e1-layout-play-screen">E.1 Layout (play screen)</h3>
+<p>Left: ConfigStrip (gated per C.2; locked between-units rule stays: SET_CFG only between units — already enforced by step.ts). Center column, top to bottom:</p>
+<ol>
+<li><strong>HUD</strong> (existing Hud.svelte, extended): wallet + budget bar, level objective line, clock strip</li>
+</ul>
+<p>(day cells for week/month scope), tedium meter (tier 2+), and level id/title.</p>
+<ol>
+<li><strong>UnitBoard</strong> (existing): the queue with done/current/queued states; rework units appear with</li>
+</ul>
+<p>their neutral labels ("review round 2", "CI failed: fix") — no cause attribution (spec 8.0).</p>
+<ol>
+<li><strong>Run bar</strong>: <code>Run next unit</code> (primary), <code>Bob codes it by hand</code> (ghost; from L2), <code>Auto-run</code></li>
+</ul>
+<p>toggle + speed (1x/2x/4x — an interval that dispatches RUN_UNIT while affordable; pauses on idle modals and on <code>ended</code>), <code>Finish</code> (appears when queue empty).</p>
+<ol>
+<li><strong>Tape</strong> (existing TapeRenderer): <code>tape.play(st.lastRequests)</code> after every action — each unit's</li>
+</ul>
+<p>requests sweep as blue read / red write bars with per-request $ printed. This is the "SEE it run live" surface.</p>
+<ol>
+<li><strong>Session stream strip</strong> (existing SessionStream.svelte, embedded read-only variant): shows the</li>
+</ul>
+<p>generated turn stream for the CURRENT unit's agent with compaction/rebuild badges. Badges: <code>rebuild</code> (red outline) and <code>compaction</code> (amber) chips on the turn cells, exactly the events already produced by <code>generateSession</code> (SESSION_PROFILE: ~33% rebuild incidence, cold writes 25–65k main / median 38k sub). The stream is COSMETIC REALISM keyed by <code>(unitId, seed)</code> — dollars remain 100% from the engine ledger; the strip's footer prints the ledger row's exact numbers so the two never disagree on totals (H.7).</p>
+<ol>
+<li><strong>Ledger table</strong> (existing toggle) — the accessibility/text alternative.</li>
+</ul>
+<p>Idle events render as the existing modal pattern (App.svelte's afford modal), with the L7 choices.</p>
+<h3 id="e2-result-computation-and-display">E.2 Result computation and display</h3>
+<p>When <code>st.ended</code> fires or the player clicks Finish: shell computes <code>outcome = { pass, stars, ... }</code> via <code>level.pass</code> + <code>starsFor</code>, calls <code>completeLevel</code>, persists, and shows the result screen:</p>
+<ul>
+<li>PASS: stars, spent vs budget, "next level unlocked: &lt;title&gt; — new tool: &lt;control&gt;" and the</li>
+</ul>
+<p>full ReportModal (Section 7 pastiche + Hidden Cost Ledger) behind a "See the full report" button.</p>
+<ul>
+<li>FAIL: if a Section 6 loss fired (<code>st.ended.lossId</code>), show that named loss screen (title, the</li>
+</ul>
+<p>player's own ledger slice re-rendered as a tape, the hidden bucket line "this was costing you $X and the UI never told you", one citation link, Retry). Else the level mini-report: <code>failLesson.line</code> with the bucket dollar figure and <code>failLesson.cite</code>.</p>
+<ul>
+<li>Retry: back to learn (skip preselected) → play with a FRESH initGame (same fixed seed —</li>
+</ul>
+<p>replays are pure optimization puzzles, spec 11.2).</p>
+<h3 id="e3-step-auto-run-speed-semantics">E.3 Step / Auto-run / Speed semantics</h3>
+<ul>
+<li><code>Run next unit</code> = dispatch RUN_UNIT for <code>st.units[st.idx]</code>; afford-fail opens the hand-code</li>
+</ul>
+<p>modal (the only affordability surface, spec 8.0).</p>
+<ul>
+<li>Auto-run = setInterval(dispatch Run next, 900ms/speed); stops on: idle modal, afford modal,</li>
+</ul>
+<p>half-boundary banner (L8), week boundary (L12), <code>ended</code>. Auto-run never hand-codes silently.</p>
+<ul>
+<li>Reduced-motion: tape jumps to final frame (already implemented); auto-run interval drops to 0</li>
+</ul>
+<p>delay batches with a single final render.</p>
+<hr>
+<h2 id="f-config-controls-catalog-controlid-stable-ids">F. Config controls catalog (ControlId — stable ids)</h2>
+<div class="table-wrap"><table>
+<thead><tr><th>ControlId</th><th>Engine field(s)</th><th>UI control</th><th>Group</th><th>Introduced by</th></tr></thead>
+<tbody>
+<tr><td><code>run</code></td><td>— (dispatches RUN_UNIT)</td><td>primary button</td><td>RUN</td><td>L1</td></tr>
+<tr><td><code>handCode</code></td><td>— (dispatches HAND_CODE)</td><td>ghost button</td><td>RUN</td><td>L2</td></tr>
+<tr><td><code>devModel</code></td><td><code>cfg.devModel</code></td><td>small-select sonnet/opus/fable</td><td>MODELS</td><td>L2</td></tr>
+<tr><td><code>planModel</code></td><td><code>cfg.planModel</code></td><td>small-select</td><td>MODELS</td><td>L3</td></tr>
+<tr><td><code>orchestratorModel</code></td><td><code>cfg.orchestratorModel</code></td><td>small-select</td><td>MODELS</td><td>L3 (shown with planModel; same lesson family)</td></tr>
+<tr><td><code>who</code></td><td><code>cfg.who</code></td><td>toggle inline/subagent</td><td>EXECUTION</td><td>L4</td></tr>
+<tr><td><code>prompts</code></td><td><code>cfg.prompts</code></td><td>small-select identical/(pointer)/varied</td><td>EXECUTION</td><td>L5</td></tr>
+<tr><td><code>width</code></td><td><code>cfg.width</code></td><td>slider 1–8</td><td>EXECUTION</td><td>L6</td></tr>
+<tr><td><code>keepWarm</code></td><td><code>cfg.keepWarm</code></td><td>checkbox</td><td>CACHE</td><td>L7</td></tr>
+<tr><td><code>keepWarmMin</code></td><td><code>cfg.keepWarmMin</code></td><td>mini-slider 10–55</td><td>CACHE</td><td>L7</td></tr>
+<tr><td><code>stepAway</code></td><td>idle modal choice</td><td>modal, not strip</td><td>—</td><td>L7</td></tr>
+<tr><td><code>oneHourFlag</code></td><td><code>cfg.oneHourFlag</code></td><td>checkbox, NO feedback chip</td><td>CACHE</td><td>L8</td></tr>
+<tr><td><code>hook</code></td><td><code>cfg.hook</code></td><td>small-select none/static/dynamic</td><td>SESSION BASE</td><td>L9</td></tr>
+<tr><td><code>skills</code></td><td><code>cfg.skills</code></td><td>slider 10–150</td><td>SESSION BASE</td><td>L10</td></tr>
+<tr><td><code>skillsMode</code></td><td><code>cfg.skillsMode</code></td><td>toggle EAGER/INVOKE</td><td>SESSION BASE</td><td>L10</td></tr>
+<tr><td><code>memoryFiles</code></td><td><code>cfg.memoryFiles</code></td><td>mini-slider 0–10</td><td>SESSION BASE</td><td>L10</td></tr>
+<tr><td><code>mcp</code></td><td><code>cfg.mcp[0..3]</code></td><td>4 checkboxes + neutral size labels</td><td>SESSION BASE</td><td>L11</td></tr>
+<tr><td><code>fleet</code></td><td>policy Partial&lt;Config&gt; + per-dev overrides</td><td>fleet panel</td><td>—</td><td>L12</td></tr>
+<tr><td><code>audit</code></td><td>phase-1 ranking widget</td><td>ranking screen</td><td>—</td><td>L13</td></tr>
+<tr><td><code>scope</code>,<code>seed</code></td><td>initGame args</td><td>selects</td><td>RUN</td><td>Sandbox/freeplay only</td></tr>
+</tbody></table></div>
+<p>Hidden-cost rules (spec 8.0) bind every control: per-M prices and schema token sizes are the ONLY facts shown; no warning colors, no projected costs, no ratio chips outside LEARN beats.</p>
+<hr>
+<h2 id="g-implementation-work-breakdown-sonnet-slices">G. Implementation work breakdown (sonnet slices)</h2>
+<p>Order and dependency graph. Each slice: files, scope, tests, acceptance. "Green" = full <code>vitest run</code> passes (62 existing + new) and <code>vite build</code> produces the clean offline bundle. Slices marked ∥ are mutually parallelizable once their dependency lands.</p>
+<p><strong>G1 — Level data model extension</strong> (no deps)</p>
+<ul>
+<li>Files: <code>src/game/levels.ts</code>, <code>src/game/levels.test.ts</code>.</li>
+<li>Add the C.1 fields to LevelDef and fill them for all 13 levels per Section D (objective text</li>
+</ul>
+<p>from LEVEL_EXPLANATIONS.md, introducedControls per F, learn beats per C.3, reference/anti cfgs, failLesson rows). Keep every existing exported symbol and predicate signature. <code>starsFor</code> reads <code>st.counts.handCoded</code> (update its two call sites + tests).</p>
+<ul>
+<li>Tests: every level has non-empty objective/introducedControls; unlockedControls(L1)=["run"],</li>
+</ul>
+<p>grows by exactly the new controls per level; LEVEL_ORDER unchanged.</p>
+<ul>
+<li>Acceptance: green; no UI change.</li>
+</ul>
+<p><strong>G2 — Shell state machine + level map screen</strong> (deps: G1)</p>
+<ul>
+<li>Files: NEW <code>src/game/shell.ts</code>, NEW <code>src/components/MapScreen.svelte</code>,</li>
+</ul>
+<p>NEW <code>src/components/ResultScreen.svelte</code>, NEW <code>src/components/LearnScreen.svelte</code>, <code>src/App.svelte</code> (becomes router), NEW <code>src/components/PlayScreen.svelte</code> (extraction of the current App body — move, don't rewrite).</p>
+<ul>
+<li>Scope: B.1 transitions exactly; localStorage persistence (B.2); LEARN beat rendering per C.3</li>
+</ul>
+<p>(two TapeRenderer instances + chip); map = 13 tiles in 3 tier rows, stars, locked tiles greyed with lock glyph, Free Play + Sandbox tiles.</p>
+<ul>
+<li>Tests: shell transition unit tests (pure functions in shell.ts); persistence round-trip;</li>
+</ul>
+<p>corrupt-save fallback.</p>
+<ul>
+<li>Acceptance: full loop playable for L1 with the existing engine: map → learn → play → result →</li>
+</ul>
+<p>L2 unlocks. Green.</p>
+<p><strong>G3 — Reducer instrumentation for gates</strong> (no deps; ∥ with G2)</p>
+<ul>
+<li>Files: <code>src/game/step.ts</code>, <code>src/game/types.ts</code>, <code>src/game/step.test.ts</code>.</li>
+<li>Add, without changing any existing priced number: (a) <code>applyGap</code> pushes IdleLogEntry rows</li>
+</ul>
+<p>(startMin, gapMin, pinged, rebuiltTok); (b) LedgerRow gains <code>sessionStart: boolean</code> and <code>toolBaseTok: number</code>; (c) <code>st.counts.cfgTouches</code> and <code>st.counts.skillTriggers</code>; (d) skill trigger roll p=0.15/unit in runUnit when <code>skillsMode==="invoke"</code> (adds SKILL_BODY_TOK to workIn for that request — this DOES change priced totals for invoke-mode runs; PRNG consumption order appended AFTER existing rolls so all current seeds' existing assertions stay valid — verify); (e) <code>st.marks: Record&lt;string, number&gt;</code> for scenario boundaries.</p>
+<ul>
+<li>Tests: idleLog populated for week scope; sessionStart tagging; skill trigger determinism at</li>
+</ul>
+<p>fixed seed; existing 62 tests green (if any golden-total test breaks from (d), scope (d) behind <code>scenario</code> flags so default runs are byte-identical — decision: DO gate it on scenarios that declare <code>skillsCanTrigger: true</code> (L10+ and sandbox) precisely to keep golden numbers stable).</p>
+<ul>
+<li>Acceptance: green.</li>
+</ul>
+<p><strong>G4 — Scenario system</strong> (deps: G3)</p>
+<ul>
+<li>Files: <code>src/game/step.ts</code> (initGame signature gains <code>scenario?: ScenarioId</code>), NEW</li>
+</ul>
+<p><code>src/game/scenarios.ts</code>, tests.</p>
+<ul>
+<li>ScenarioId: `"default" | "dev-only" | "dev-marathon" | "fanout8" | "fanout8-slow" | "gaps" |</li>
+</ul>
+<p>"two-halves" | "week7starts" | "spawn12" | "mcp-required"<code>. Each is a pure descriptor: unit-queue transform (truncate/duplicate unitDefs, wave size override), idle schedule override (replacing </code>idleBefore<code>), spawn clock offsets (L6 slow agent), half/week boundary marks, MCP requirement map, </code>skillsCanTrigger<code>. LevelDef gains </code>scenario: ScenarioId`.</p>
+<ul>
+<li>Tests: per-scenario queue shape; L6 slow-agent cold counts at widths 2 vs 8; L8 half ratios</li>
+</ul>
+<p>≈0.28/≈0.74 from reference ledgers; L7 gap list = [25, 75, 1320] (per H.5).</p>
+<ul>
+<li>Acceptance: green; runScript(seed, scope, cfg, scenario) deterministic.</li>
+</ul>
+<p><strong>G5 — Gate tightening to spec 11.3</strong> (deps: G3+G4; ∥ with G6)</p>
+<ul>
+<li>Files: <code>src/game/levels.ts</code>, <code>src/game/levels.test.ts</code>.</li>
+<li>Replace the weak predicates flagged in D: L2 cfgTouch, L4 prefix&lt;90k, L7 idleLog clauses,</li>
+</ul>
+<p>L8 per-half write tiers, L9 avg session-start write &lt;6k, L10 base+trigger clauses, L11 shipped + toolBase 80% clause, L12/L13 per D. All predicates read only ledger/hidden/idleLog/counts/ marks — never cfg (spec 11.6), except L10's documented ledger-row fallback.</p>
+<ul>
+<li>Tests: for each level, reference run passes and anti run fails (these become the invariant-11</li>
+</ul>
+<p>fixtures for G8).</p>
+<ul>
+<li>Acceptance: green.</li>
+</ul>
+<p><strong>G6 — Fleet driver + L12/L13 screens</strong> (deps: G4, G5)</p>
+<ul>
+<li>Files: NEW <code>src/game/fleet.ts</code> (5-state round-robin, <code>autoRunWeek</code>, policy application at week</li>
+</ul>
+<p>boundaries), NEW <code>src/components/FleetScreen.svelte</code> (5 dev cards: name, spend, queue progress, mini-tape of last requests; policy panel = full ConfigStrip in "policy" mode + per-dev override drawer), NEW <code>src/components/AuditScreen.svelte</code> (phase-1 report + 4-lever ranking via select-order buttons — no drag lib), report generator hook into <code>src/game/report.ts</code> (reuse formatter; add <code>generateAuditReport(seed)</code> that headless-runs the anti-fleet).</p>
+<ul>
+<li>Tests: fleet determinism (two runs identical); L12 reference policy passes ≤$300; audit report</li>
+</ul>
+<p>figures ordered idle &gt; delegate &gt; 5m-band &gt; MCP; L13 recovered-% math.</p>
+<ul>
+<li>Acceptance: green; L12/L13 playable end to end.</li>
+</ul>
+<p><strong>G7 — Play-screen visibility layer</strong> (deps: G2; ∥ with G5/G6)</p>
+<ul>
+<li>Files: <code>src/components/ConfigStrip.svelte</code> (accepts <code>visible: ControlId[]</code>, <code>lockedFields</code>,</li>
+</ul>
+<p>renders only visible groups), <code>src/components/PlayScreen.svelte</code> (run bar with Auto-run/speed, Finish, idle modal, session-stream strip embed with rebuild/compaction badges, ledger footer parity line), <code>src/components/Hud.svelte</code> (objective line, clock strip, tedium gating by tier), <code>src/components/SessionStream.svelte</code> (read-only embedded mode prop).</p>
+<ul>
+<li>Tests: component-level (vitest + @testing-library if present; else pure helper tests for</li>
+</ul>
+<p>visibility computation). Visibility: L1 shows only RUN; each level adds exactly its controls.</p>
+<ul>
+<li>Acceptance: green; spec 8.0 audit — no cost badges, no ratio chips, no warning colors anywhere</li>
+</ul>
+<p>on the play screen (manual checklist in PR description).</p>
+<p><strong>G8 — Boot invariants + reference-solution assertions (invariant 11)</strong> (deps: G5, G6)</p>
+<ul>
+<li>Files: <code>src/game/assert.ts</code>, NEW <code>src/game/references.ts</code> (per-level reference/anti action</li>
+</ul>
+<p>scripts), tests mirroring each assertion.</p>
+<ul>
+<li>For all 13 levels: <code>run(levelSeed, referenceActions)</code> passes the gate at 3★ (1★ for L1) and the</li>
+</ul>
+<p>anti run fails. Budget-band checks: L2 sonnet-vs-fable band, L12 anti ≥ $400 baseline. Gated console.assert pattern (never breaks the page), duplicated as hard vitest tests.</p>
+<ul>
+<li>Acceptance: green; boot log prints "campaign invariants PASSED".</li>
+</ul>
+<p><strong>G9 — Result/loss/report polish (function-level)</strong> (deps: G2, G5; ∥ with G8)</p>
+<ul>
+<li>Files: <code>src/components/ResultScreen.svelte</code>, <code>src/game/report.ts</code> (level mini-report filter:</li>
+</ul>
+<p>Hidden Cost Ledger reduced to the level's bucket), loss-screen content table (Section 6 L1–L8 ids, citations opening in new tabs rel=noopener).</p>
+<ul>
+<li>Tests: mini-report bucket selection; loss routing table.</li>
+<li>Acceptance: green.</li>
+</ul>
+<p>Order: G1 → (G2 ∥ G3) → G4 → (G5 ∥ G7) → G6 → (G8 ∥ G9). Peak parallel fan-out: 2–3 sonnets. Every slice ends with the full test suite + build; no slice leaves the app unbootable.</p>
+<hr>
+<h2 id="h-risks-open-questions-conflicts">H. Risks / open questions / conflicts</h2>
+<ol>
+<li><strong>"~34k" vs 26,237 (L4/C8 vs C10).</strong> Spec 11.3 L4 says "~34k cold base"; the canonical engine</li>
+</ul>
+<p>constant is BASE_IDENTICAL=26,237 (C10) and LEVEL_EXPLANATIONS.md already resolved this in favor of 26,237. RESOLUTION: all copy and gates use 26,237; "~34k" appears nowhere.</p>
+<ol>
+<li><strong>L2 "2 DEV units" vs N_DEV=3.</strong> The engine's wave size is 3. RESOLUTION: keep the wave of 3</li>
+</ul>
+<p>and let the boot-asserted reference run re-anchor the $2.00 budget; if sonnet-reference lands over $1.70 (breaking the 2★ band), raise budgetUsd to reference/0.7 rounded to $0.25 and note it in the level row. [ESTIMATE] until G8 runs the numbers.</p>
+<ol>
+<li><strong>PLAN_Q/DEV_Q direction.</strong> constants.ts says "higher = better" but buildQueue divides by them,</li>
+</ul>
+<p>so sonnet (1.5/1.6) yields LESS rework than fable (0.7/0.75) — which contradicts spec 3.4's worked example ("sonnet plan + sonnet dev averages ~2 rounds; fable plan + opus dev ~1.2") and the L3 reference (fable-plan cheaper overall). The IMPLEMENTED direction (in step.ts, covered by passing tests) treats fable as the weak planner... actually <code>q = 0.8/(devQ²·planQ)</code>: larger Q ⇒ smaller q ⇒ less rework, so sonnet-plan yields FEWER rounds — the code inverts the spec's L3 story. CONFLICT, must be settled before G5: either (a) swap PLAN_Q values so fable&gt;sonnet (matches spec 11.3 L3 reference: fable-plan ≈ $5.20 with ~1.2 rounds, sonnet-plan ≈ $8+), or (b) rewrite L3's reference to sonnet-plan-good. RECOMMENDATION: (a) — spec 11.3 is the binding campaign source; adjust PLAN_Q to <code>{ fable: 1.6, opus: 1.0, sonnet: 0.75 }</code> equivalent semantics via a code comment, and update the affected step tests. Flag loudly in the PR; this is the only engine-constants touch in the plan.</p>
+<ol>
+<li><strong>Pointer strategy.</strong> Engine has no pointer branch (+500 tok workIn, [FICTION delta], spec 4.3).</li>
+</ul>
+<p>RESOLUTION: v1 ships identical/varied only in L5's select; pointer is added in the sandbox later. No gate depends on it.</p>
+<ol>
+<li><strong>L7 overnight vs C19 break-even.</strong> Spec's scripted overnight (12 h) is BELOW the 20 h 1h-tier</li>
+</ul>
+<p>keep-warm break-even, so "don't ping the overnight" would be economically false. RESOLUTION: the L7 scenario overnight is 1,320 min (22 h — a late start next day), putting it past C19's 16–20 h band so the gate's third clause is honest. Deviation from the spec's "overnight gap of 10–14 h" text, justified by C19 itself. [ESTIMATE] on the exact 22 h figure.</p>
+<ol>
+<li><strong>L12 "$450 last month" baseline.</strong> [FICTION] per spec; boot assertion only requires the</li>
+</ul>
+<p>anti-fleet ≥ $400. If the anti-fleet lands materially elsewhere, display the computed figure instead of the hardcoded 450.</p>
+<ol>
+<li><strong>SessionStream vs ledger dollars.</strong> The generated turn stream (SESSION_PROFILE realism) is</li>
+</ul>
+<p>cosmetic; its per-turn tokens do not sum to the engine ledger row. RESOLUTION: the strip footer always prints the ledger row's exact read/write/$ ("what actually got billed"), and no gate reads the stream. Documented in G7.</p>
+<ol>
+<li><strong>G3(d) skill triggers change priced totals.</strong> Gated behind <code>skillsCanTrigger</code> scenarios so all</li>
+</ul>
+<p>existing golden-number tests stay byte-identical. If a future calibration wants triggers in default runs, that is a deliberate re-baselining, not part of this plan.</p>
+<ol>
+<li><strong>L9 "7 session starts in 5 days".</strong> Requires two intra-day &gt;8 h gaps, which strains "one 5 h</li>
+</ul>
+<p>block per day". Scenario uses split days (two blocks) on days 2 and 4. Cosmetic fiction; accruals unchanged. [ESTIMATE] on the split-day framing.</p>
+<ol>
+<li><strong>Star thresholds vs tight budgets.</strong> Levels whose reference lands near 70% of budget make 3★</li>
+</ul>
+<p>borderline-impossible. G8's assertion (reference hits 3★) is the enforcement: where it fails, the budget is raised per the H.2 rule rather than loosening the star formula.</p>
+<ol>
+<li><strong>Keep-warm break-even: ~16 h vs 20 h.</strong> <code>10-cost-saving-playbook.md</code> ("~16h break-even on 1h</li>
+</ul>
+<p>TTL") and C19's "16–20 h" band vs <code>constants.ts KEEPWARM_BREAKEVEN_1H_H = 20</code>. RESOLUTION: constants.ts is canonical (20 h, the derived <code>(2×60)/6</code> rule); copy says "16–20 h" as the band, gates use the 20 h constant. No code change.</p>
+<ol>
+<li><strong>ARCHITECTURE.md alignment.</strong> ARCHITECTURE.md describes <code>src/components/</code> and <code>src/widgets/</code></li>
+</ul>
+<p>as stubs and <code>step.ts</code> as "immer"; the code has since landed both (JSON-clone reducer, five real components). This plan follows the CODE, and G2 includes a one-paragraph ARCHITECTURE.md refresh (layout section only) so the doc stops lying. <code>src/widgets/</code> (article S0–S6 entrypoints) is NOT touched by this plan; the campaign lives on the standalone page, and the article-widget mapping (spec 11.5, shared <code>cc-sim-campaign</code> key) is a later phase.</p>
+<hr>
+<h2 id="i-grounding-matrix-level-mechanic-raw-evidence-constant-playbook-lever">I. Grounding matrix — level mechanic → raw evidence → constant → playbook lever</h2>
+<p>Every level's mechanic traces to a mitmproxy-grounded finding (files 01–06), a constants.ts symbol, and a <code>10-cost-saving-playbook.md</code> lever. This is the review checklist: if a row cannot be defended from its evidence file, the level's copy or gate is wrong.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Level</th><th>Mechanic</th><th>Raw evidence (file § )</th><th>constants.ts</th><th>Playbook lever</th></tr></thead>
+<tbody>
+<tr><td>L1</td><td>read 0.1x vs write; prefix match</td><td>01 §"Write vs read economics", §"Prefix match, not content match"</td><td>RATE (pricing.ts), MAIN_PREFIX_HEY 34,738</td><td>intro to all of (A)</td></tr>
+<tr><td>L2</td><td>output 5x; model $/M rows</td><td>06 pricing table (opus $5/$0.50/$10/$25; multipliers)</td><td>MODEL_IN, RATE.out=5</td><td>model-choice lever (C)</td></tr>
+<tr><td>L3</td><td>cheap plan → downstream rework</td><td>game fiction (spec 3.4, labeled [FICTION]) — no mitm evidence; honesty note stays in copy</td><td>DEV_Q / PLAN_Q [FICTION]</td><td>"smart plan pays" (C)</td></tr>
+<tr><td>L4</td><td>inline history re-priced each turn vs bounded sub cold base</td><td>01 §"Empirically, within one live session" (climbing cache_read, small writes); 03 §"Main (~46k) vs subagent (~26k) furniture"; 04 baseline (86% write first turn)</td><td>INLINE_B0/INLINE_GROWTH (C29), BASE_IDENTICAL 26,237 (C10)</td><td>delegate-vs-inline lever (B)</td></tr>
+<tr><td>L5</td><td>identical prompt = 0 write; one-word diff = 14.6k rewrite</td><td>04 Experiment A (fully cached), Experiment B (HEY/HELLO), Experiment C (byte-level PING/PONG)</td><td>BASE_IDENTICAL, VAR_W 14,623, VAR_R 11,602 (C11)</td><td>byte-identical subagent prompts (B)</td></tr>
+<tr><td>L6</td><td>subagent 5m TTL; ~90 s/spawn ⇒ 3 warm waves</td><td>04 §"CONFIRMED CROSS-MACHINE: subagents 5m TTL"; 05 §"CONFIRMED: subagents run at 5-minute TTL"</td><td>WARM_WAVES=3 (C27)</td><td>fan wide inside the 5m window (B)</td></tr>
+<tr><td>L7</td><td>TTL refresh-on-hit; idle rebuild 20x; keep-warm break-even</td><td>05 §"The TTL timer refreshes on use", §"Keep-Warm economics", §"Idle-rebuild waste measured" (215 events, 2–6h band dominant)</td><td>KEEPWARM_BREAKEVEN_1H_H=20 (C19; see H.11)</td><td>A1/A2 — the biggest measured lever (~13% weekly quota)</td></tr>
+<tr><td>L8</td><td>1h write 2x vs 5m 1.25x; break-even ratio 0.65</td><td>05 §"Break-even depends on TTL"; TC-D WIN/LOSS machines (M1 0.28 / M2 0.74)</td><td>ONEHOUR_BREAKEVEN≈0.652 (C21 corrected)</td><td>flip the 1h flag only when measured (A)</td></tr>
+<tr><td>L9</td><td>changing early line poisons the whole cached prefix</td><td>01 §"The lookup: longest-first, cumulative fingerprint"; 04 §"Two-hey main-session test" (~24.3k lost write)</td><td>HOOK_POISON 24,300 (C23)</td><td>static SessionStart hook (D)</td></tr>
+<tr><td>L10</td><td>catalogs live in MESSAGES and ride every base</td><td>03 §"The catalogs live in *messages*, not *system*" (13,083 of the 15,693 block; machine-specific hook output per LEVEL_EXPLANATIONS note)</td><td>CATALOG_FULL 13,083 (C7), CATALOG_PER_ENTRY (C32), MEMORY_PER_FILE [FICTION]</td><td>invoke-only skills / trim loadout (D)</td></tr>
+<tr><td>L11</td><td>tool schemas ≈16k shared into every session and spawn</td><td>03 §"A hey main-session request (opus, 14 tools)" (~16k tools block); 04 baseline avg base</td><td>TOOLS_BASE 16,295, MCP_SIZES (C24)</td><td>trim MCP — highest universal leverage (D)</td></tr>
+<tr><td>L12</td><td>all levers compound at fleet scale</td><td>aggregate of all above; C15/C18 fleet-scale measurements (101 sessions / 645 subagents / 71% cold)</td><td>all</td><td>the whole playbook as policy</td></tr>
+<tr><td>L13</td><td>read the diag report, rank levers by $</td><td>cache_diagnose.py output shape; C17 recoverable split (idle $575 ≫ delegate $87 &gt; 5m-band $30 &gt; MCP $23)</td><td>report.ts pastiche</td><td>"run the audit first" — the playbook's own method</td></tr>
+</tbody></table></div>
+<p>Playbook levers with NO level: A3-style ping cadence tuning is folded into L7's interval slider; nothing else in the playbook lacks a home. Levels with no measured evidence: L3 only (declared [FICTION] in copy, per the playbook's honesty-first rule).</p>
+<footer>Rendered from GAME_PLAN.md for offline review. No external resources.</footer>
+</body>
+</html>
